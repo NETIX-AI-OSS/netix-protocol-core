@@ -1,0 +1,20 @@
+[package]
+name = "sim-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Protocol-agnostic simulation engine, TUI, and app lifecycle for the generic simulator."
+
+[dependencies]
+proto-api = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+log = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+ratatui = "0.29"
+crossterm = "0.28"

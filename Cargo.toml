@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = ["crates/proto-api", "crates/sim-core", "crates/proto-bacnet", "crates/proto-modbus", "crates/proto-opcua", "crates/republish-core"]
+
+# Patched bacnet-transport: keeps broadcast destination port at 47808 when the
+# local bind port is ephemeral (port = 0), which upstream breaks. Used by the
+# proto-bacnet republish adapter. Kept as a patch-path (not a workspace member)
+# so `fmt`/`clippy --workspace` don't touch the vendored source. The
+# netix-republisher binary repo vendors its own copy and re-applies this patch.
+[patch.crates-io]
+bacnet-transport = { path = "crates/proto-bacnet/vendor/bacnet-transport" }
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/NETIX-AI-OSS/netix-protocol-core"
+
+[workspace.dependencies]
+# Shared third-party deps (versions tracked from the original tools).
+anyhow = "1.0"
+async-trait = "0.1"
+bytes = "1.10"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+crossbeam-channel = "0.5"
+env_logger = "0.11"
+log = "0.4"
+rand = "0.8"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9.34"
+thiserror = "2.0"
+tokio = { version = "1.48", features = ["full"] }
+tokio-util = "0.7"
+toml = "0.9"
+
+# Internal crates.
+proto-api = { path = "crates/proto-api" }
+sim-core = { path = "crates/sim-core" }
+republish-core = { path = "crates/republish-core" }
+proto-bacnet = { path = "crates/proto-bacnet" }
+proto-modbus = { path = "crates/proto-modbus" }
+proto-opcua = { path = "crates/proto-opcua" }

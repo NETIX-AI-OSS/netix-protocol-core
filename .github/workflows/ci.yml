@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      # Clippy is informational: the vendored bacnet-transport opts into
+      # `#![warn(missing_docs)]`, so we don't fail the build on warnings here.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+
+      - name: Test cores
+        run: cargo test --locked -p proto-api -p sim-core -p republish-core
+
+      - name: Test protocol adapters
+        run: |
+          cargo test --locked -p proto-bacnet --features sim
+          cargo test --locked -p proto-modbus --features sim,republish
+          cargo test --locked -p proto-opcua --features sim,republish

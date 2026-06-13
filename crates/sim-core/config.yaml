@@ -1,0 +1,355 @@
+building:
+  name: "Marina Heights Tower"
+  location: "Dubai"
+  timezone: "Asia/Dubai"
+
+seasonality:
+  weekly_schedule:
+    weekday_occupancy:
+      - { time: "00:00", value: 0.0 }
+      - { time: "07:00", value: 0.2 }
+      - { time: "09:00", value: 1.0 }
+      - { time: "18:00", value: 1.0 }
+      - { time: "20:00", value: 0.2 }
+      - { time: "23:59", value: 0.05 }
+    weekend_occupancy:
+      - { time: "00:00", value: 0.0 }
+      - { time: "10:00", value: 0.3 }
+      - { time: "20:00", value: 0.4 }
+      - { time: "23:59", value: 0.05 }
+
+id_policy:
+  device_id_base: 10000
+  per_template_block: 100
+
+templates:
+  # ===================== CENTRAL PLANT =====================
+  chiller:
+    description: "Water-cooled centrifugal chiller"
+    points:
+      - { label: chw_supply_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 6.5, gain: 0.05, outside_influence: 0.05, noise: 0.05, initial: 7.0 } }
+      - { label: chw_return_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 12.0, gain: 0.05, outside_influence: 0.1, noise: 0.1, initial: 12.0 } }
+      - { label: condenser_supply_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 29.0, gain: 0.05, outside_influence: 0.3, noise: 0.1, initial: 29.0 } }
+      - { label: condenser_return_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 34.0, gain: 0.05, outside_influence: 0.3, noise: 0.1, initial: 34.0 } }
+      - { label: evap_pressure, object_type: analog_input, units: kilopascals,
+          profile: { kind: random_walk, base: 380.0, step: 2.0, min: 350.0, max: 420.0 } }
+      - { label: condenser_pressure, object_type: analog_input, units: kilopascals,
+          profile: { kind: random_walk, base: 1050.0, step: 5.0, min: 950.0, max: 1150.0 } }
+      - { label: chw_flow, object_type: analog_input, units: liters_per_second,
+          profile: { kind: occupancy_linked, base: 5.0, peak_delta: 40.0, noise: 2.0 } }
+      - { label: active_power, object_type: analog_input, units: kilowatts,
+          profile: { kind: occupancy_linked, base: 50.0, peak_delta: 350.0, noise: 15.0 } }
+      - { label: percent_load, object_type: analog_input, units: percent,
+          profile: { kind: occupancy_linked, base: 5.0, peak_delta: 90.0, noise: 2.0 } }
+      - { label: run_status, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.05 } }
+      - { label: alarm, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 2.0 } }
+      - { label: runtime_hours, object_type: analog_input, units: hours,
+          profile: { kind: integrator, rate_source: run_status, scale: 0.000277778 } }
+
+  boiler:
+    description: "Hot water boiler"
+    points:
+      - { label: hhw_supply_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 70.0, gain: 0.05, outside_influence: -0.1, noise: 0.2, initial: 65.0 } }
+      - { label: hhw_return_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 55.0, gain: 0.05, outside_influence: -0.1, noise: 0.2, initial: 55.0 } }
+      - { label: hhw_flow, object_type: analog_input, units: liters_per_second,
+          profile: { kind: occupancy_linked, base: 2.0, peak_delta: 20.0, noise: 1.0 } }
+      - { label: gas_input, object_type: analog_input, units: kilowatts,
+          profile: { kind: occupancy_linked, base: 20.0, peak_delta: 200.0, noise: 10.0 } }
+      - { label: modulation, object_type: analog_input, units: percent,
+          profile: { kind: occupancy_linked, base: 10.0, peak_delta: 80.0, noise: 5.0 } }
+      - { label: flame_status, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.05 } }
+      - { label: low_water_alarm, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 2.0 } }
+      - { label: high_temp_alarm, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 2.0 } }
+      - { label: stack_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: random_walk, base: 180.0, step: 1.0, min: 150.0, max: 220.0 } }
+      - { label: runtime_hours, object_type: analog_input, units: hours,
+          profile: { kind: integrator, rate_source: flame_status, scale: 0.000277778 } }
+
+  chw_pump:
+    description: "Variable-speed chilled water pump"
+    points:
+      - { label: run_status, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.05 } }
+      - { label: speed_command, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 30.0, peak_delta: 60.0, noise: 3.0 } }
+      - { label: active_power, object_type: analog_input, units: kilowatts,
+          profile: { kind: occupancy_linked, base: 5.0, peak_delta: 45.0, noise: 2.0 } }
+      - { label: differential_pressure, object_type: analog_input, units: kilopascals,
+          profile: { kind: random_walk, base: 150.0, step: 2.0, min: 100.0, max: 200.0 } }
+      - { label: fault, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 2.0 } }
+      - { label: runtime_hours, object_type: analog_input, units: hours,
+          profile: { kind: integrator, rate_source: run_status, scale: 0.000277778 } }
+
+  hhw_pump:
+    description: "Variable-speed hot water pump"
+    points:
+      - { label: run_status, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.05 } }
+      - { label: speed_command, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 25.0, peak_delta: 60.0, noise: 3.0 } }
+      - { label: active_power, object_type: analog_input, units: kilowatts,
+          profile: { kind: occupancy_linked, base: 3.0, peak_delta: 25.0, noise: 1.0 } }
+      - { label: differential_pressure, object_type: analog_input, units: kilopascals,
+          profile: { kind: random_walk, base: 130.0, step: 2.0, min: 80.0, max: 180.0 } }
+      - { label: fault, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 2.0 } }
+      - { label: runtime_hours, object_type: analog_input, units: hours,
+          profile: { kind: integrator, rate_source: run_status, scale: 0.000277778 } }
+
+  cooling_tower:
+    description: "Open-circuit cooling tower"
+    points:
+      - { label: basin_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 28.0, gain: 0.05, outside_influence: 0.5, noise: 0.2, initial: 28.0 } }
+      - { label: fan_speed, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 20.0, peak_delta: 70.0, noise: 3.0 } }
+      - { label: fan_status, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.05 } }
+      - { label: sump_level, object_type: analog_input, units: percent,
+          profile: { kind: random_walk, base: 70.0, step: 0.5, min: 40.0, max: 95.0 } }
+      - { label: makeup_flow, object_type: analog_input, units: liters_per_second,
+          profile: { kind: occupancy_linked, base: 0.1, peak_delta: 1.5, noise: 0.1 } }
+      - { label: alarm, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 2.0 } }
+      - { label: fan_power, object_type: analog_input, units: kilowatts,
+          profile: { kind: occupancy_linked, base: 1.0, peak_delta: 18.0, noise: 1.0 } }
+      - { label: runtime_hours, object_type: analog_input, units: hours,
+          profile: { kind: integrator, rate_source: fan_status, scale: 0.000277778 } }
+
+  plant_meter:
+    description: "Central plant power & utility meter"
+    points:
+      - { label: active_power, object_type: analog_input, units: kilowatts,
+          profile: { kind: occupancy_linked, base: 80.0, peak_delta: 700.0, noise: 25.0 } }
+      - { label: reactive_power, object_type: analog_input, units: kilovolt_amperes_reactive,
+          profile: { kind: occupancy_linked, base: 10.0, peak_delta: 150.0, noise: 5.0 } }
+      - { label: apparent_power, object_type: analog_input, units: kilovolt_amperes,
+          profile: { kind: occupancy_linked, base: 85.0, peak_delta: 720.0, noise: 25.0 } }
+      - { label: power_factor, object_type: analog_input, units: no_units,
+          profile: { kind: random_walk, base: 0.93, step: 0.002, min: 0.85, max: 0.99 } }
+      - { label: voltage_l1, object_type: analog_input, units: volts,
+          profile: { kind: random_walk, base: 230.0, step: 0.3, min: 222.0, max: 238.0 } }
+      - { label: voltage_l2, object_type: analog_input, units: volts,
+          profile: { kind: random_walk, base: 230.0, step: 0.3, min: 222.0, max: 238.0 } }
+      - { label: voltage_l3, object_type: analog_input, units: volts,
+          profile: { kind: random_walk, base: 230.0, step: 0.3, min: 222.0, max: 238.0 } }
+      - { label: frequency, object_type: analog_input, units: hertz,
+          profile: { kind: random_walk, base: 50.0, step: 0.01, min: 49.8, max: 50.2 } }
+      - { label: total_energy, object_type: analog_input, units: kilowatt_hours,
+          profile: { kind: integrator, rate_source: active_power, scale: 0.000277778 } }
+      - { label: total_reactive_energy, object_type: analog_input, units: kilowatt_hours,
+          profile: { kind: integrator, rate_source: reactive_power, scale: 0.000277778 } }
+
+  # ===================== AIR HANDLING =====================
+  ahu_large:
+    description: "Central air handling unit (large)"
+    points:
+      - { label: supply_air_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 14.0, gain: 0.05, outside_influence: 0.05, noise: 0.1, initial: 16.0 } }
+      - { label: return_air_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 23.0, gain: 0.05, outside_influence: 0.1, noise: 0.15, initial: 23.0 } }
+      - { label: mixed_air_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 18.0, gain: 0.04, outside_influence: 0.2, noise: 0.15, initial: 20.0 } }
+      - { label: outside_air_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 30.0, gain: 1.0, outside_influence: 1.0, noise: 0.0, initial: 30.0 } }
+      - { label: supply_airflow, object_type: analog_input, units: cubic_feet_per_minute,
+          profile: { kind: occupancy_linked, base: 2000.0, peak_delta: 18000.0, noise: 500.0 } }
+      - { label: return_airflow, object_type: analog_input, units: cubic_feet_per_minute,
+          profile: { kind: occupancy_linked, base: 1800.0, peak_delta: 16000.0, noise: 500.0 } }
+      - { label: supply_fan_speed, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 20.0, peak_delta: 75.0, noise: 3.0 } }
+      - { label: return_fan_speed, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 20.0, peak_delta: 70.0, noise: 3.0 } }
+      - { label: supply_fan_status, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.05 } }
+      - { label: oa_damper, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 15.0, peak_delta: 35.0, noise: 2.0 } }
+      - { label: ra_damper, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 65.0, peak_delta: -35.0, noise: 2.0 } }
+      - { label: chw_valve, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 10.0, peak_delta: 75.0, noise: 3.0 } }
+      - { label: hhw_valve, object_type: analog_output, units: percent,
+          profile: { kind: random_walk, base: 5.0, step: 1.0, min: 0.0, max: 30.0 } }
+      - { label: filter_dp, object_type: analog_input, units: pascals,
+          profile: { kind: random_walk, base: 120.0, step: 0.5, min: 80.0, max: 250.0 } }
+      - { label: alarm, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 2.0 } }
+      - { label: supply_air_temp_setpoint, object_type: analog_value, units: degrees_celsius,
+          profile: { kind: constant, value: 14.0 } }
+
+  ahu_small:
+    description: "Floor-level small air handling unit"
+    points:
+      - { label: supply_air_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 15.0, gain: 0.05, outside_influence: 0.1, noise: 0.15, initial: 17.0 } }
+      - { label: return_air_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 23.0, gain: 0.05, outside_influence: 0.15, noise: 0.15, initial: 23.0 } }
+      - { label: supply_airflow, object_type: analog_input, units: cubic_feet_per_minute,
+          profile: { kind: occupancy_linked, base: 500.0, peak_delta: 4500.0, noise: 200.0 } }
+      - { label: supply_fan_speed, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 25.0, peak_delta: 65.0, noise: 3.0 } }
+      - { label: supply_fan_status, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.05 } }
+      - { label: oa_damper, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 15.0, peak_delta: 25.0, noise: 2.0 } }
+      - { label: chw_valve, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 10.0, peak_delta: 70.0, noise: 3.0 } }
+      - { label: filter_dp, object_type: analog_input, units: pascals,
+          profile: { kind: random_walk, base: 100.0, step: 0.5, min: 60.0, max: 220.0 } }
+      - { label: alarm, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 2.0 } }
+      - { label: supply_air_temp_setpoint, object_type: analog_value, units: degrees_celsius,
+          profile: { kind: constant, value: 15.0 } }
+
+  # ===================== TERMINAL UNITS =====================
+  vav_office:
+    description: "Variable air volume box (office)"
+    points:
+      - { label: room_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 22.5, gain: 0.04, outside_influence: 0.15, noise: 0.1, initial: 24.0 } }
+      - { label: damper_position, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 10.0, peak_delta: 70.0, noise: 3.0 } }
+      - { label: airflow, object_type: analog_input, units: cubic_feet_per_minute,
+          profile: { kind: occupancy_linked, base: 50.0, peak_delta: 400.0, noise: 15.0 } }
+      - { label: reheat_valve, object_type: analog_output, units: percent,
+          profile: { kind: random_walk, base: 0.0, step: 1.0, min: 0.0, max: 100.0 } }
+      - { label: occupancy_sensor, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.1 } }
+      - { label: room_temp_setpoint, object_type: analog_value, units: degrees_celsius,
+          profile: { kind: constant, value: 22.5 } }
+
+  fcu_residential:
+    description: "Fan coil unit (residential apartment)"
+    points:
+      - { label: room_temp, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 23.0, gain: 0.04, outside_influence: 0.2, noise: 0.1, initial: 24.0 } }
+      - { label: room_temp_setpoint, object_type: analog_value, units: degrees_celsius,
+          profile: { kind: constant, value: 23.0 } }
+      - { label: fan_speed, object_type: multi_state_output,
+          profile: { kind: multi_state, states: [1, 2, 3], change_every_secs: 1800 } }
+      - { label: valve_position, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 10.0, peak_delta: 60.0, noise: 4.0 } }
+      - { label: fan_status, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.05 } }
+
+  # ===================== METERING =====================
+  tenant_meter:
+    description: "Tenant electricity submeter"
+    points:
+      - { label: active_power, object_type: analog_input, units: kilowatts,
+          profile: { kind: occupancy_linked, base: 2.0, peak_delta: 18.0, noise: 1.0 } }
+      - { label: reactive_power, object_type: analog_input, units: kilovolt_amperes_reactive,
+          profile: { kind: occupancy_linked, base: 0.3, peak_delta: 3.0, noise: 0.2 } }
+      - { label: power_factor, object_type: analog_input, units: no_units,
+          profile: { kind: random_walk, base: 0.92, step: 0.003, min: 0.82, max: 0.99 } }
+      - { label: total_energy, object_type: analog_input, units: kilowatt_hours,
+          profile: { kind: integrator, rate_source: active_power, scale: 0.000277778 } }
+
+  water_meter:
+    description: "Water submeter"
+    points:
+      - { label: flow_rate, object_type: analog_input, units: liters_per_second,
+          profile: { kind: occupancy_linked, base: 0.05, peak_delta: 1.5, noise: 0.1 } }
+      - { label: total_volume, object_type: analog_input, units: cubic_meters,
+          profile: { kind: integrator, rate_source: flow_rate, scale: 0.001 } }
+
+  # ===================== LIGHTING / SENSORS / MISC =====================
+  lighting_panel:
+    description: "Zone lighting controller (4 zones)"
+    points:
+      - { label: zone1_status, object_type: binary_output,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.05 } }
+      - { label: zone2_status, object_type: binary_output,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.1 } }
+      - { label: zone3_status, object_type: binary_output,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.2 } }
+      - { label: zone4_status, object_type: binary_output,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.3 } }
+      - { label: zone1_dim, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 20.0, peak_delta: 80.0, noise: 2.0 } }
+      - { label: zone2_dim, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 15.0, peak_delta: 85.0, noise: 2.0 } }
+      - { label: zone3_dim, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 10.0, peak_delta: 80.0, noise: 2.0 } }
+      - { label: zone4_dim, object_type: analog_output, units: percent,
+          profile: { kind: occupancy_linked, base: 5.0, peak_delta: 70.0, noise: 2.0 } }
+
+  sensor_pack:
+    description: "Public-area environmental sensor pack"
+    points:
+      - { label: temperature, object_type: analog_input, units: degrees_celsius,
+          profile: { kind: temp_control, setpoint: 23.0, gain: 0.03, outside_influence: 0.25, noise: 0.1, initial: 23.5 } }
+      - { label: humidity, object_type: analog_input, units: percent_relative_humidity,
+          profile: { kind: random_walk, base: 50.0, step: 0.4, min: 35.0, max: 70.0 } }
+      - { label: co2, object_type: analog_input, units: parts_per_million,
+          profile: { kind: occupancy_linked, base: 420.0, peak_delta: 900.0, noise: 30.0 } }
+      - { label: occupied, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 0.1 } }
+
+  ev_charger:
+    description: "EV charging station"
+    points:
+      - { label: charger_status, object_type: multi_state_input,
+          profile: { kind: multi_state, states: [1, 2, 3, 4], change_every_secs: 900 } }
+      - { label: active_power, object_type: analog_input, units: kilowatts,
+          profile: { kind: occupancy_linked, base: 0.0, peak_delta: 22.0, noise: 0.5 } }
+      - { label: session_energy, object_type: analog_input, units: kilowatt_hours,
+          profile: { kind: integrator, rate_source: active_power, scale: 0.000277778 } }
+      - { label: fault, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 2.0 } }
+
+  elevator:
+    description: "Passenger elevator"
+    points:
+      - { label: status, object_type: multi_state_input,
+          profile: { kind: multi_state, states: [1, 2, 3], change_every_secs: 60 } }
+      - { label: current_floor, object_type: analog_input, units: no_units,
+          profile: { kind: random_walk, base: 5.0, step: 1.0, min: 0.0, max: 12.0 } }
+      - { label: fault, object_type: binary_input,
+          profile: { kind: binary_schedule, on_when_occupancy_gt: 2.0 } }
+
+  fire_panel:
+    description: "Fire alarm panel (read-only points)"
+    points:
+      - { label: panel_status, object_type: multi_state_input,
+          profile: { kind: constant_state, value: 1 } }
+      - { label: zone1_alarm, object_type: binary_input,
+          profile: { kind: constant_bool, value: false } }
+      - { label: zone2_alarm, object_type: binary_input,
+          profile: { kind: constant_bool, value: false } }
+      - { label: trouble, object_type: binary_input,
+          profile: { kind: constant_bool, value: false } }
+
+# ===================== INSTANCES =====================
+# Each instance block is allocated a contiguous device_id block of `per_template_block` (100)
+# starting at device_id_base + (block_index + 1) * 100.
+instances:
+  - { template: chiller,         name_prefix: "CH",        zone: central_plant,  count: 4 }
+  - { template: boiler,          name_prefix: "BLR",       zone: central_plant,  count: 2 }
+  - { template: chw_pump,        name_prefix: "CHWP",      zone: central_plant,  count: 6 }
+  - { template: hhw_pump,        name_prefix: "HHWP",      zone: central_plant,  count: 4 }
+  - { template: cooling_tower,   name_prefix: "CT",        zone: roof,           count: 3 }
+  - { template: plant_meter,     name_prefix: "PLANT-MTR", zone: central_plant,  count: 1 }
+  - { template: ahu_large,       name_prefix: "AHU-L",     zone: mep_rooms,      count: 12 }
+  - { template: ahu_small,       name_prefix: "AHU-S",     zone: floor_mep,      count: 4 }
+  - { template: vav_office,      name_prefix: "VAV-OFC",   zone: office,         count: 80 }
+  - { template: fcu_residential, name_prefix: "FCU-RES",   zone: residential,    count: 50 }
+  - { template: tenant_meter,    name_prefix: "TNT-MTR",   zone: tenant,         count: 30 }
+  - { template: water_meter,     name_prefix: "WTR-MTR",   zone: tenant,         count: 10 }
+  - { template: lighting_panel,  name_prefix: "LTG",       zone: common,         count: 8 }
+  - { template: sensor_pack,     name_prefix: "SENS",      zone: public,         count: 25 }
+  - { template: ev_charger,      name_prefix: "EVC",       zone: parking,        count: 12 }
+  - { template: elevator,        name_prefix: "ELEV",      zone: cores,          count: 6 }
+  - { template: fire_panel,      name_prefix: "FIRE",      zone: life_safety,    count: 1 }

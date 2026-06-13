@@ -1,0 +1,40 @@
+[package]
+name = "proto-bacnet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BACnet/IP protocol adapter (reference implementation) for the generic simulator and republisher."
+
+[features]
+default = []
+# Simulator-side adapter (BACnet/IP server).
+sim = ["dep:sim-core", "dep:bacnet-rs", "dep:bacnet-services", "dep:bacnet-types", "dep:bytes"]
+# Republisher-side adapter (BACnet/IP discovery + polling).
+republish = [
+    "dep:republish-core",
+    "dep:bacnet-client",
+    "dep:bacnet-services",
+    "dep:bacnet-transport",
+    "dep:bacnet-types",
+    "dep:futures-util",
+    "dep:serde_json",
+]
+
+[dependencies]
+proto-api = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+
+sim-core = { workspace = true, optional = true }
+republish-core = { workspace = true, optional = true }
+
+bacnet-rs = { version = "0.3.0", optional = true }
+bacnet-client = { version = "0.9.0", optional = true }
+bacnet-services = { version = "0.9.0", optional = true }
+bacnet-transport = { version = "0.9.0", optional = true }
+bacnet-types = { version = "0.9.0", optional = true }
+bytes = { workspace = true, optional = true }
+futures-util = { version = "0.3", default-features = false, optional = true }
+serde_json = { workspace = true, optional = true }

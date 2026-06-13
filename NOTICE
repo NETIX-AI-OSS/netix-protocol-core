@@ -1,0 +1,26 @@
+NETIX Protocol Core
+Copyright (c) NETIX
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+------------------------------------------------------------------------------
+Third-party components with different licenses
+------------------------------------------------------------------------------
+
+1. async-opcua (and its async-opcua-* sub-crates)
+   Used by: crates/proto-opcua (only when built with the `sim` or `republish`
+   feature; i.e. the OPC UA support consumed by the netix-simulator and
+   netix-republisher binaries).
+   License: MPL-2.0 (Mozilla Public License 2.0), a file-level copyleft license.
+   Depending on / linking these crates from this Apache-2.0 workspace is
+   permitted by the MPL-2.0. Modifications to the MPL-2.0 source files themselves
+   would need to be released under MPL-2.0, but this project does not modify them.
+
+2. bacnet-transport (vendored, patched)
+   Location: crates/proto-bacnet/vendor/bacnet-transport
+   Origin: the rusty-bacnet project.
+   License: MIT (see crates/proto-bacnet/vendor/bacnet-transport/LICENSE).
+   Patch: keeps the broadcast destination port at 47808 when the local bind
+   port is ephemeral (port = 0); upstream sends broadcasts to the ephemeral
+   bind port, which breaks BACnet Who-Is discovery from an ephemeral-port client.
+   The netix-republisher binary repo vendors its own copy of this patched crate.

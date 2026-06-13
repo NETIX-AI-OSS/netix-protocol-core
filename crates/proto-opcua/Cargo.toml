@@ -1,0 +1,31 @@
+[package]
+name = "proto-opcua"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OPC UA protocol adapter for the generic simulator and republisher (uses async-opcua, MPL-2.0)."
+
+[features]
+default = []
+# Simulator-side adapter (OPC UA server).
+sim = ["dep:sim-core", "dep:async-opcua", "async-opcua/server"]
+# Republisher-side adapter (OPC UA client).
+republish = ["dep:republish-core", "dep:async-opcua", "async-opcua/client", "dep:serde_json"]
+
+[dependencies]
+proto-api = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+
+sim-core = { workspace = true, optional = true }
+republish-core = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+# NOTE: async-opcua is MPL-2.0 (file-level copyleft), unlike the rest of this
+# Apache-2.0 workspace. It is confined to this crate; recorded in the NOTICE file.
+async-opcua = { version = "0.18", optional = true, default-features = false }
+
+[dev-dependencies]
+tokio-util = { workspace = true }

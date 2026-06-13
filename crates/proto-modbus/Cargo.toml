@@ -1,0 +1,31 @@
+[package]
+name = "proto-modbus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Modbus TCP protocol adapter for the generic simulator and republisher."
+
+[features]
+default = []
+# Simulator-side adapter (Modbus TCP server).
+sim = ["dep:sim-core", "tokio-modbus/tcp-server"]
+# Republisher-side adapter (Modbus TCP client).
+republish = ["dep:republish-core", "tokio-modbus/tcp"]
+
+[dependencies]
+proto-api = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+sim-core = { workspace = true, optional = true }
+republish-core = { workspace = true, optional = true }
+
+tokio-modbus = { version = "0.17", default-features = false }
+
+[dev-dependencies]
+# Client side of tokio-modbus, used by the serve() integration test.
+tokio-modbus = { version = "0.17", features = ["tcp"] }
+tokio-util = { workspace = true }

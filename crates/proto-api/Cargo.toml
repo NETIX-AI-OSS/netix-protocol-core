@@ -1,0 +1,10 @@
+[package]
+name = "proto-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Protocol-neutral types shared by the generic simulator and republisher cores."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
