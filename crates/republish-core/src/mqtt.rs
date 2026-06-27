@@ -182,13 +182,32 @@ impl RumqttPublisher {
             }
         }
 
-        stats.reconnects = self.state.reconnects.load(Ordering::Relaxed);
+        stats.reconnects = self.reconnect_count();
         if stats.last_error.is_none() {
-            if let Ok(last_error) = self.state.last_error.lock() {
-                stats.last_error = last_error.clone();
-            }
+            stats.last_error = self.last_connection_error();
         }
         stats
+    }
+
+    pub(crate) fn try_enqueue_sample(
+        &self,
+        topic: &str,
+        payload: Vec<u8>,
+        retain: bool,
+    ) -> Result<()> {
+        self.enqueue(topic, payload, retain)
+    }
+
+    pub fn reconnect_count(&self) -> usize {
+        self.state.reconnects.load(Ordering::Relaxed)
+    }
+
+    pub fn last_connection_error(&self) -> Option<String> {
+        self.state
+            .last_error
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
     }
 }
 

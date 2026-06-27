@@ -5,13 +5,15 @@
 //! protocol never requires touching this file.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Local, Utc};
 use iced::widget::{checkbox, column, container, pick_list, row, scrollable, text, Space};
-use iced::{Alignment, Element, Length, Subscription, Task, Theme};
+use iced::{window, Alignment, Element, Font, Length, Size, Subscription, Task, Theme};
 
 use proto_api::{Capabilities, DiscoveryKind, FieldKind, FieldSpec};
 
@@ -21,16 +23,18 @@ use crate::model::{
     json_scalar, DiscoveredDevice, DiscoveredPoint, PointConfig, PointIdentity, PointSample,
     PointStatus,
 };
+use crate::network::{interface_choices, ipv4_interfaces, NetworkInterface};
 use crate::protocol::RepublishRegistry;
 use crate::topic::telemetry_topic;
 use crate::ui::{self, ButtonKind, ChipKind, Icon, Palette};
 use crate::worker::{
-    spawn_browse, spawn_discovery, spawn_republisher, RepublisherLifecycle, WorkerChannel,
-    WorkerEvent,
+    spawn_browse, spawn_discovery, spawn_poll_once, spawn_republisher, spawn_scan_all_objects,
+    RepublisherLifecycle, WorkerChannel, WorkerEvent,
 };
 
 const LOG_CAPACITY: usize = 500;
 const RECENT_SAMPLE_CAPACITY: usize = 200;
+const UI_FONT: Font = Font::with_name("Fira Sans");
 
 pub fn run(build_registry: fn() -> RepublishRegistry) -> iced::Result {
     iced::application(
@@ -41,12 +45,20 @@ pub fn run(build_registry: fn() -> RepublishRegistry) -> iced::Result {
     .title("NETIX Republisher")
     .subscription(RepublisherApp::subscription)
     .theme(RepublisherApp::theme)
+    .default_font(UI_FONT)
+    .window(window::Settings {
+        size: Size::new(1180.0, 760.0),
+        min_size: Some(Size::new(920.0, 620.0)),
+        icon: window_icon(),
+        ..window::Settings::default()
+    })
     .antialiasing(true)
     .run()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
+    Overview,
     Connect,
     Points,
     Republish,
@@ -63,8 +75,12 @@ pub enum Message {
     ConnFieldChanged(String, String),
     ConnBoolToggled(String, bool),
     Discover,
+    ScanAllObjects,
     BrowseDevice(usize),
     AddBrowsedPoint(usize),
+    PollOnce,
+    ClearAllPoints,
+    RefreshNics,
     // Point editor
     PeDeviceKey(String),
     PeAddrField(String, String),
@@ -88,6 +104,8 @@ pub enum Message {
     MqttCaCert(String),
     MqttClientCert(String),
     MqttClientKey(String),
+    MqttKeyPassphrase(String),
+    MqttKeepAlive(String),
     MqttRetain(bool),
     MqttRememberSecrets(bool),
     ThemeSelected(UiTheme),
@@ -108,8 +126,11 @@ struct RepublisherApp {
 
     // discovery / browse
     conn_values: BTreeMap<String, String>,
+    interfaces: Vec<NetworkInterface>,
     devices: Vec<DiscoveredDevice>,
     browsed: Vec<DiscoveredPoint>,
+    scan_progress: Option<(usize, usize)>,
+    clear_points_armed: bool,
 
     // point editor
     pe_device_key: String,
@@ -121,6 +142,7 @@ struct RepublisherApp {
 
     // mqtt drafts (numeric buffers)
     mqtt_port_buf: String,
+    mqtt_keep_alive_buf: String,
 
     // republisher runtime
     lifecycle: RepublisherLifecycle,
@@ -149,7 +171,9 @@ impl RepublisherApp {
             }
         }
         let conn_values = connection_strings(&config, &caps);
+        let interfaces = ipv4_interfaces();
         let mqtt_port_buf = config.mqtt.port.to_string();
+        let mqtt_keep_alive_buf = config.mqtt.keep_alive_secs.to_string();
 
         let mut logs = LogBuffer::new(LOG_CAPACITY);
         logs.push(LogLevel::Info, status.clone());
@@ -160,11 +184,14 @@ impl RepublisherApp {
             protocol_ids,
             config,
             config_path,
-            page: Page::Connect,
+            page: initial_page(),
             status,
             conn_values,
+            interfaces,
             devices: Vec::new(),
             browsed: Vec::new(),
+            scan_progress: None,
+            clear_points_armed: false,
             pe_device_key: String::new(),
             pe_addr_values: BTreeMap::new(),
             pe_tag: String::new(),
@@ -172,6 +199,7 @@ impl RepublisherApp {
             pe_enabled: true,
             editing_index: None,
             mqtt_port_buf,
+            mqtt_keep_alive_buf,
             lifecycle: RepublisherLifecycle::Stopped,
             stop_flag: None,
             recent_samples: VecDeque::new(),
@@ -226,7 +254,38 @@ impl RepublisherApp {
         self.logs.push(level, message);
     }
 
+    fn clear_all_points(&mut self) {
+        let points = self.config.points.len();
+        if points == 0 {
+            self.clear_points_armed = false;
+            self.save_status(LogLevel::Info, "No points to clear.");
+            return;
+        }
+        if !self.clear_points_armed {
+            self.clear_points_armed = true;
+            self.save_status(
+                LogLevel::Warning,
+                format!(
+                    "Press 'Confirm clear' again to remove {points} configured point(s). Any other action cancels."
+                ),
+            );
+            return;
+        }
+        self.config.points.clear();
+        self.statuses.clear();
+        self.reset_point_editor();
+        self.clear_points_armed = false;
+        self.save_config();
+        self.save_status(
+            LogLevel::Info,
+            format!("Cleared {points} configured point(s)."),
+        );
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
+        if !matches!(message, Message::ClearAllPoints) && self.clear_points_armed {
+            self.clear_points_armed = false;
+        }
         match message {
             Message::SelectPage(page) => self.page = page,
             Message::Tick => self.drain_worker_events(),
@@ -246,8 +305,29 @@ impl RepublisherApp {
                 self.persist_connection();
             }
             Message::Discover => self.start_discovery(),
+            Message::ScanAllObjects => self.start_scan_all(),
             Message::BrowseDevice(index) => self.start_browse(index),
             Message::AddBrowsedPoint(index) => self.add_browsed_point(index),
+            Message::PollOnce => self.start_poll_once(),
+            Message::ClearAllPoints => self.clear_all_points(),
+            Message::RefreshNics => {
+                self.interfaces = ipv4_interfaces();
+                if self
+                    .conn_values
+                    .get("interface")
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    if let Some(first) = self.interfaces.first() {
+                        self.conn_values
+                            .insert("interface".into(), first.addr.to_string());
+                        self.persist_connection();
+                    }
+                }
+                self.save_status(
+                    LogLevel::Info,
+                    format!("Refreshed {} network interface(s)", self.interfaces.len()),
+                );
+            }
             Message::PeDeviceKey(value) => self.pe_device_key = value,
             Message::PeAddrField(key, value) => {
                 self.pe_addr_values.insert(key, value);
@@ -287,6 +367,13 @@ impl RepublisherApp {
             Message::MqttCaCert(v) => self.config.mqtt.ca_cert_path = non_empty(v),
             Message::MqttClientCert(v) => self.config.mqtt.client_cert_path = non_empty(v),
             Message::MqttClientKey(v) => self.config.mqtt.client_key_path = non_empty(v),
+            Message::MqttKeyPassphrase(v) => self.config.mqtt.client_key_passphrase = non_empty(v),
+            Message::MqttKeepAlive(v) => {
+                self.mqtt_keep_alive_buf = v.clone();
+                if let Ok(secs) = v.trim().parse::<u64>() {
+                    self.config.mqtt.keep_alive_secs = secs.max(1);
+                }
+            }
             Message::MqttRetain(v) => self.config.mqtt.retain = v,
             Message::MqttRememberSecrets(v) => self.config.mqtt.remember_secrets = v,
             Message::ThemeSelected(theme) => {
@@ -343,6 +430,44 @@ impl RepublisherApp {
         self.browsed.clear();
         self.save_status(LogLevel::Info, format!("Browsing {}…", device.key));
         spawn_browse(self.channel.sender.clone(), factory, conn, device);
+    }
+
+    fn start_scan_all(&mut self) {
+        if self.devices.is_empty() {
+            self.save_status(LogLevel::Warning, "Discover devices before scan-all");
+            return;
+        }
+        let Some(factory) = self.registry.get(&self.config.protocol) else {
+            return;
+        };
+        self.persist_connection();
+        let conn = self.config.connection();
+        let devices = self.devices.clone();
+        let existing = self.config.points.clone();
+        self.scan_progress = Some((0, devices.len()));
+        self.save_status(LogLevel::Info, "Scanning all objects…");
+        spawn_scan_all_objects(
+            self.channel.sender.clone(),
+            factory,
+            conn,
+            devices,
+            existing,
+        );
+    }
+
+    fn start_poll_once(&mut self) {
+        let Some(factory) = self.registry.get(&self.config.protocol) else {
+            return;
+        };
+        self.persist_connection();
+        spawn_poll_once(
+            self.channel.sender.clone(),
+            factory,
+            self.config.connection(),
+            self.config.mqtt.clone(),
+            self.config.points.clone(),
+        );
+        self.save_status(LogLevel::Info, "Polling once…");
     }
 
     fn add_browsed_point(&mut self, index: usize) {
@@ -465,6 +590,21 @@ impl RepublisherApp {
                     }
                 }
                 WorkerEvent::Points(points) => self.browsed = points,
+                WorkerEvent::ScanProgress { current, total, .. } => {
+                    self.scan_progress = Some((current, total));
+                }
+                WorkerEvent::BulkTagImport(result) => {
+                    self.config.points = result.points;
+                    self.scan_progress = None;
+                    self.save_config();
+                    self.save_status(
+                        LogLevel::Info,
+                        format!(
+                            "Bulk import: {} added, {} updated",
+                            result.added, result.updated
+                        ),
+                    );
+                }
                 WorkerEvent::Samples(samples) => {
                     for sample in samples {
                         let id = PointIdentity::from_point(&sample.point);
@@ -487,6 +627,13 @@ impl RepublisherApp {
                 WorkerEvent::PublishStatus(stats) => {
                     self.published_total += stats.published;
                 }
+                WorkerEvent::PointPublish { identity, error } => {
+                    let status = self.statuses.entry(identity).or_default();
+                    match error {
+                        None => status.record_publish_success(),
+                        Some(message) => status.record_publish_failure(message),
+                    }
+                }
                 WorkerEvent::Lifecycle(lifecycle) => {
                     if let RepublisherLifecycle::Failed(ref error) = lifecycle {
                         self.logs
@@ -507,6 +654,7 @@ impl RepublisherApp {
             column![
                 ui::brand(),
                 Space::new().height(Length::Fixed(8.0)),
+                self.nav(palette, Page::Overview, Icon::Overview, "Overview"),
                 self.nav(palette, Page::Connect, Icon::Discover, "Connect"),
                 self.nav(palette, Page::Points, Icon::Points, "Points"),
                 self.nav(palette, Page::Republish, Icon::Publish, "Republish"),
@@ -527,10 +675,20 @@ impl RepublisherApp {
         )
         .height(Length::Fill);
 
-        let status_bar = container(text(self.status.as_str()).size(13).color(palette.muted))
-            .padding(8.0)
-            .width(Length::Fill)
-            .style(move |_| ui::status_bar_style(palette));
+        let status_bar = container(
+            text(format!(
+                "{}  ·  {} point(s)  ·  {} device(s)  ·  {}",
+                self.status,
+                self.config.points.len(),
+                self.devices.len(),
+                self.config_path.display()
+            ))
+            .size(13)
+            .color(palette.muted),
+        )
+        .padding(8.0)
+        .width(Length::Fill)
+        .style(move |_| ui::status_bar_style(palette));
 
         row![sidebar, column![body, status_bar].width(Length::Fill)]
             .height(Length::Fill)
@@ -545,12 +703,76 @@ impl RepublisherApp {
 
     fn page_view(&self, palette: Palette) -> Element<'_, Message> {
         match self.page {
+            Page::Overview => self.overview_page(palette),
             Page::Connect => self.connect_page(palette),
             Page::Points => self.points_page(palette),
             Page::Republish => self.republish_page(palette),
             Page::Settings => self.settings_page(palette),
             Page::Logs => self.logs_page(palette),
         }
+    }
+
+    fn overview_page(&self, palette: Palette) -> Element<'_, Message> {
+        let stale = self.statuses.values().filter(|s| s.stale).count();
+        let metrics = row![
+            ui::metric(
+                palette,
+                "Points",
+                self.config.points.len().to_string(),
+                "configured",
+                ChipKind::Accent,
+            ),
+            ui::metric(
+                palette,
+                "Devices",
+                self.devices.len().to_string(),
+                "discovered",
+                ChipKind::Neutral,
+            ),
+            ui::metric(
+                palette,
+                "Published",
+                self.published_total.to_string(),
+                "samples",
+                ChipKind::Success,
+            ),
+            ui::metric(
+                palette,
+                "Stale",
+                stale.to_string(),
+                "points",
+                if stale > 0 {
+                    ChipKind::Warning
+                } else {
+                    ChipKind::Success
+                },
+            ),
+        ]
+        .spacing(12);
+
+        let mut activity = column![ui::eyebrow(palette, "RECENT ACTIVITY")].spacing(4);
+        for sample in self.recent_samples.iter().take(8) {
+            activity = activity.push(
+                text(format!(
+                    "{} = {}",
+                    sample.point.display_name(),
+                    sample.value
+                ))
+                .size(12)
+                .color(palette.muted),
+            );
+        }
+        if self.recent_samples.is_empty() {
+            activity = activity.push(ui::muted(palette, "No samples yet."));
+        }
+
+        column![
+            ui::section_title(palette, "Overview"),
+            metrics,
+            ui::card(palette, activity),
+        ]
+        .spacing(16)
+        .into()
     }
 
     fn connect_page(&self, palette: Palette) -> Element<'_, Message> {
@@ -570,8 +792,57 @@ impl RepublisherApp {
         .spacing(14);
 
         if let Some(caps) = self.active_caps() {
+            let has_interface = caps
+                .connection_fields
+                .iter()
+                .any(|spec| spec.key == "interface");
+            let discover_all = self
+                .conn_values
+                .get("discover_all_interfaces")
+                .is_some_and(|value| value == "true");
             let mut fields = column![].spacing(10);
             for spec in &caps.connection_fields {
+                if spec.key == "interface" {
+                    continue;
+                }
+                fields = fields.push(self.render_field(
+                    palette,
+                    spec,
+                    &self.conn_values,
+                    |k, v| Message::ConnFieldChanged(k, v),
+                    |k, v| Message::ConnBoolToggled(k, v),
+                ));
+            }
+            if has_interface && !discover_all {
+                let choices = interface_choices(&self.interfaces);
+                let selected = self
+                    .conn_values
+                    .get("interface")
+                    .and_then(|value| value.parse::<Ipv4Addr>().ok());
+                fields = fields.push(
+                    row![
+                        text("Network interface")
+                            .size(13)
+                            .color(palette.text)
+                            .width(Length::Fixed(160.0)),
+                        pick_list(
+                            choices,
+                            selected,
+                            |addr| Message::ConnFieldChanged("interface".into(), addr.to_string())
+                        ),
+                        ui::action_button(
+                            palette,
+                            Icon::Refresh,
+                            "Refresh NICs",
+                            ButtonKind::Secondary
+                        )
+                        .on_press(Message::RefreshNics),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                );
+            } else if let Some(spec) = caps.connection_fields.iter().find(|field| field.key == "interface")
+            {
                 fields = fields.push(self.render_field(
                     palette,
                     spec,
@@ -589,10 +860,34 @@ impl RepublisherApp {
                 DiscoveryKind::SubnetScan => "Scan subnet",
                 DiscoveryKind::ManualOnly => "Discover",
             };
-            let discover_btn =
-                ui::action_button(palette, Icon::Refresh, discover_label, ButtonKind::Primary)
-                    .on_press(Message::Discover);
-            content = content.push(discover_btn);
+            let discover_row = row![ui::action_button(
+                palette,
+                Icon::Refresh,
+                discover_label,
+                ButtonKind::Primary
+            )
+            .on_press(Message::Discover),]
+            .spacing(8);
+            content = content.push(discover_row);
+
+            if !self.devices.is_empty() {
+                content = content.push(
+                    ui::action_button(
+                        palette,
+                        Icon::Discover,
+                        "Scan all objects",
+                        ButtonKind::Secondary,
+                    )
+                    .on_press(Message::ScanAllObjects),
+                );
+            }
+            if let Some((current, total)) = self.scan_progress {
+                content = content.push(
+                    text(format!("Scan progress: {current}/{total}"))
+                        .size(12)
+                        .color(palette.muted),
+                );
+            }
 
             if !self.devices.is_empty() {
                 let mut list = column![ui::eyebrow(palette, "DISCOVERED DEVICES")].spacing(8);
@@ -724,24 +1019,55 @@ impl RepublisherApp {
             );
 
         // List
-        let mut list = column![ui::section_title(
-            palette,
-            format!("Configured points ({})", self.config.points.len())
-        )]
+        let mut list = column![
+            ui::section_title(
+                palette,
+                format!("Configured points ({})", self.config.points.len())
+            ),
+            ui::action_button(
+                palette,
+                Icon::Delete,
+                if self.clear_points_armed {
+                    "Confirm clear"
+                } else {
+                    "Clear all points"
+                },
+                if self.clear_points_armed {
+                    ButtonKind::Danger
+                } else {
+                    ButtonKind::Secondary
+                },
+            )
+            .on_press(Message::ClearAllPoints),
+        ]
         .spacing(6);
         for (index, point) in self.config.points.iter().enumerate() {
             let topic = telemetry_topic(&self.config.mqtt, point);
+            let id = PointIdentity::from_point(point);
+            let status = self.statuses.get(&id);
+            let (chip_label, chip_kind) = point_status_chip(status);
             let toggle = checkbox(point.enabled).on_toggle(move |v| Message::TogglePoint(index, v));
+            let detail = status
+                .and_then(|s| s.last_value.as_ref())
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "—".into());
+            let sampled = status
+                .and_then(|s| s.last_sample_ms)
+                .map(format_timestamp)
+                .unwrap_or_else(|| "—".into());
             list = list.push(ui::card(
                 palette,
                 row![
                     toggle,
                     column![
                         text(point.display_name()).size(13).color(palette.text),
-                        text(topic).size(11).color(palette.subtle),
+                        text(format!("{topic}  ·  {detail}  ·  sampled {sampled}"))
+                            .size(11)
+                            .color(palette.subtle),
                     ]
                     .spacing(2)
                     .width(Length::Fill),
+                    ui::chip(palette, chip_label, chip_kind),
                     ui::action_button(palette, Icon::Edit, "Edit", ButtonKind::Ghost)
                         .on_press(Message::EditPoint(index)),
                     ui::action_button(palette, Icon::Delete, "Delete", ButtonKind::Danger)
@@ -764,20 +1090,63 @@ impl RepublisherApp {
         let (state_label, chip_kind) = match &self.lifecycle {
             RepublisherLifecycle::Running => ("Running", ChipKind::Success),
             RepublisherLifecycle::Starting => ("Starting", ChipKind::Warning),
+            RepublisherLifecycle::Stopping => ("Stopping", ChipKind::Warning),
             RepublisherLifecycle::Stopped => ("Stopped", ChipKind::Neutral),
             RepublisherLifecycle::Failed(_) => ("Failed", ChipKind::Danger),
         };
         let running = matches!(
             self.lifecycle,
-            RepublisherLifecycle::Running | RepublisherLifecycle::Starting
+            RepublisherLifecycle::Running
+                | RepublisherLifecycle::Starting
+                | RepublisherLifecycle::Stopping
         );
-        let control = if running {
-            ui::action_button(palette, Icon::Stop, "Stop", ButtonKind::Danger)
-                .on_press(Message::StopRepublisher)
-        } else {
-            ui::action_button(palette, Icon::Start, "Start", ButtonKind::Primary)
-                .on_press(Message::StartRepublisher)
-        };
+        let control = row![
+            if running {
+                ui::action_button(palette, Icon::Stop, "Stop", ButtonKind::Danger)
+                    .on_press(Message::StopRepublisher)
+            } else {
+                ui::action_button(palette, Icon::Start, "Start", ButtonKind::Primary)
+                    .on_press(Message::StartRepublisher)
+            },
+            ui::action_button(palette, Icon::Refresh, "Poll once", ButtonKind::Secondary)
+                .on_press(Message::PollOnce),
+        ]
+        .spacing(8);
+
+        let mqtt_target = ui::card(
+            palette,
+            column![
+                ui::section_title(palette, "MQTT target"),
+                row![
+                    ui::field_readout(
+                        palette,
+                        "Endpoint",
+                        format!(
+                            "{}:{} ({})",
+                            self.config.mqtt.host,
+                            self.config.mqtt.port,
+                            if self.config.mqtt.use_tls {
+                                "TLS"
+                            } else {
+                                "plain TCP"
+                            }
+                        ),
+                    ),
+                    ui::field_readout(
+                        palette,
+                        "Topic prefix",
+                        self.config.mqtt.topic_prefix.clone(),
+                    ),
+                    ui::field_readout(
+                        palette,
+                        "Health topic",
+                        self.config.mqtt.health_topic.clone(),
+                    ),
+                ]
+                .spacing(16),
+            ]
+            .spacing(10),
+        );
 
         let metrics = row![
             ui::metric(
@@ -825,6 +1194,7 @@ impl RepublisherApp {
                 control
             ]
             .align_y(Alignment::Center),
+            mqtt_target,
             metrics,
             ui::card(palette, samples),
         ]
@@ -901,6 +1271,20 @@ impl RepublisherApp {
                 "optional",
                 mqtt.client_key_path.as_deref().unwrap_or(""),
                 Message::MqttClientKey
+            ),
+            ui::labeled_input(
+                palette,
+                "Client key passphrase",
+                "optional",
+                mqtt.client_key_passphrase.as_deref().unwrap_or(""),
+                Message::MqttKeyPassphrase
+            ),
+            ui::labeled_input(
+                palette,
+                "Keep-alive (s)",
+                "",
+                &self.mqtt_keep_alive_buf,
+                Message::MqttKeepAlive
             ),
             checkbox(mqtt.retain)
                 .label("Retain")
@@ -994,11 +1378,59 @@ impl RepublisherApp {
                     on_text(key.clone(), v)
                 })
             }
+            FieldKind::Secret => {
+                let key = spec.key.clone();
+                let hint = spec.help.as_deref().unwrap_or("");
+                ui::labeled_secret_input(palette, &spec.label, hint, current, move |v| {
+                    on_text(key.clone(), v)
+                })
+            }
         }
     }
 }
 
 // ---- helpers ----
+
+fn initial_page() -> Page {
+    let name = std::env::var("REPUBLISHER_INITIAL_PAGE")
+        .or_else(|_| std::env::var("BACNET_REPUBLISHER_INITIAL_PAGE"))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match name.as_str() {
+        "overview" => Page::Overview,
+        "connect" | "discover" => Page::Connect,
+        "points" => Page::Points,
+        "republish" => Page::Republish,
+        "settings" => Page::Settings,
+        "logs" => Page::Logs,
+        _ => Page::Overview,
+    }
+}
+
+fn point_status_chip(status: Option<&PointStatus>) -> (&'static str, ChipKind) {
+    match status {
+        None => ("Unknown", ChipKind::Neutral),
+        Some(s) if s.last_publish_error.is_some() => ("Publish error", ChipKind::Danger),
+        Some(s) if s.last_error.is_some() => ("Read error", ChipKind::Danger),
+        Some(s) if s.stale => ("Stale", ChipKind::Warning),
+        Some(_) => ("OK", ChipKind::Success),
+    }
+}
+
+fn window_icon() -> Option<window::Icon> {
+    window::icon::from_file_data(include_bytes!("../assets/app-icon.png"), None).ok()
+}
+
+fn format_timestamp(timestamp_ms: i64) -> String {
+    DateTime::<Utc>::from_timestamp_millis(timestamp_ms)
+        .map(|timestamp| {
+            timestamp
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| timestamp_ms.to_string())
+}
 
 fn non_empty(value: String) -> Option<String> {
     let trimmed = value.trim();

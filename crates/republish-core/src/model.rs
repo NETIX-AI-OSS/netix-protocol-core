@@ -212,6 +212,13 @@ impl Default for PointStatus {
     }
 }
 
+/// Result of a BACnet (or protocol-specific) device-table refresh.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RefreshOutcome {
+    pub resolved: Vec<u32>,
+    pub unresolved: Vec<u32>,
+}
+
 impl PointStatus {
     pub fn record_sample(&mut self, sample: &PointSample) {
         self.last_value = Some(sample.value.clone());

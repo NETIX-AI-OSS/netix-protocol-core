@@ -33,6 +33,6 @@ jobs:
 
       - name: Test protocol adapters
         run: |
-          cargo test --locked -p proto-bacnet --features sim
+          cargo test --locked -p proto-bacnet --features sim,republish
           cargo test --locked -p proto-modbus --features sim,republish
           cargo test --locked -p proto-opcua --features sim,republish

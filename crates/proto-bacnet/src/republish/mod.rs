@@ -1,7 +1,11 @@
 //! BACnet/IP republisher adapter: Who-Is discovery, object-list browse, and
 //! ReadProperty(Multiple) polling, mapped onto the generic republisher trait.
 
+mod refresh;
 mod value;
+
+#[cfg(feature = "republish")]
+pub mod test_support;
 
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
@@ -11,18 +15,19 @@ use anyhow::{anyhow, Context as _, Result};
 use bacnet_client::client::BACnetClient;
 use bacnet_services::common::PropertyReference;
 use bacnet_services::rpm::ReadAccessSpecification;
-use bacnet_transport::bip::BipTransport;
+use bacnet_transport::bip::{BipTransport, ForeignDeviceConfig};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 use futures_util::stream::{self, StreamExt};
 use proto_api::{Addressing, Capabilities};
 use republish_core::model::{
     json_scalar, now_millis, DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig,
-    PointFailure, PointSample, PollOutcome,
+    PointFailure, PointSample, PollOutcome, RefreshOutcome,
 };
 use republish_core::network::{ipv4_interfaces, NetworkInterface};
 use republish_core::RepublishProtocol;
 
+use refresh::refresh_device_table;
 use value::{
     decode_object_id, decode_scalar_value, decode_unsigned, object_type_from_text,
     object_type_name, property_identifier_from_text,
@@ -31,25 +36,114 @@ use value::{
 type BacnetIpClient = BACnetClient<BipTransport>;
 
 const DISCOVERY_BROADCAST_PASSES: usize = 3;
-const MAX_BROWSE_OBJECTS: usize = 512;
+pub(crate) const MAX_BROWSE_OBJECTS: usize = 512;
 
 pub struct BacnetRepublishProtocol {
     caps: Capabilities,
+    session: tokio::sync::Mutex<Option<PollSession>>,
 }
 
-pub fn republish_factory() -> Box<dyn RepublishProtocol> {
-    Box::new(BacnetRepublishProtocol {
-        caps: crate::capabilities(),
-    })
+struct PollSession {
+    fingerprint: ConnFingerprint,
+    bind_interface: Ipv4Addr,
+    client: BacnetIpClient,
 }
 
-struct ConnCfg {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConnFingerprint {
     interface: Ipv4Addr,
     port: u16,
     broadcast: Ipv4Addr,
     discovery_window_ms: u64,
     apdu_timeout_ms: u64,
+    bbmd: Option<(Ipv4Addr, u16, u16)>,
+}
+
+impl ConnFingerprint {
+    fn from_cfg(cfg: &ConnCfg) -> Self {
+        Self {
+            interface: cfg.interface,
+            port: cfg.port,
+            broadcast: cfg.broadcast,
+            discovery_window_ms: cfg.discovery_window_ms,
+            apdu_timeout_ms: cfg.apdu_timeout_ms,
+            bbmd: cfg.bbmd.as_ref().map(|b| (b.address, b.port, b.ttl_secs as u16)),
+        }
+    }
+}
+
+impl BacnetRepublishProtocol {
+    pub fn new(caps: Capabilities) -> Self {
+        Self {
+            caps,
+            session: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn ensure_poll_client(
+        &self,
+        cfg: &ConnCfg,
+        interfaces: &[NetworkInterface],
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<PollSession>>> {
+        let mut guard = self.session.lock().await;
+        let bind = resolve_bind_interface(cfg, interfaces);
+        let fingerprint = ConnFingerprint::from_cfg(cfg);
+        let needs_rebuild = match guard.as_ref() {
+            None => true,
+            Some(session) => {
+                session.fingerprint != fingerprint || session.bind_interface != bind
+            }
+        };
+        if needs_rebuild {
+            if let Some(mut old) = guard.take() {
+                old.client.stop().await.ok();
+            }
+            let client = build_client(cfg, bind).await?;
+            *guard = Some(PollSession {
+                fingerprint,
+                bind_interface: bind,
+                client,
+            });
+        }
+        Ok(guard)
+    }
+}
+
+pub fn republish_factory() -> Box<dyn RepublishProtocol> {
+    Box::new(BacnetRepublishProtocol::new(crate::capabilities()))
+}
+
+struct ConnCfg {
+    interface: Ipv4Addr,
+    discover_all_interfaces: bool,
+    bind_failure_policy: BindFailurePolicy,
+    port: u16,
+    broadcast: Ipv4Addr,
+    bbmd: Option<BbmdCfg>,
+    discovery_window_ms: u64,
+    apdu_timeout_ms: u64,
     poll_concurrency: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindFailurePolicy {
+    Skip,
+    Strict,
+}
+
+struct BbmdCfg {
+    address: Ipv4Addr,
+    port: u16,
+    ttl_secs: u16,
+}
+
+fn conn_bool(conn: &Addressing, key: &str) -> bool {
+    match conn.get(key) {
+        Some(serde_json::Value::Bool(v)) => *v,
+        Some(serde_json::Value::String(s)) => s.eq_ignore_ascii_case("true") || s == "1",
+        Some(serde_json::Value::Number(n)) => n.as_u64().is_some_and(|v| v != 0),
+        _ => false,
+    }
 }
 
 fn conn_str(conn: &Addressing, key: &str) -> Option<String> {
@@ -75,10 +169,28 @@ fn parse_conn(conn: &Addressing, interfaces: &[NetworkInterface]) -> ConnCfg {
     let broadcast = conn_str(conn, "broadcast_address")
         .and_then(|s| s.parse::<Ipv4Addr>().ok())
         .unwrap_or(Ipv4Addr::BROADCAST);
+    let bbmd = conn_str(conn, "bbmd_address")
+        .and_then(|s| s.parse::<Ipv4Addr>().ok())
+        .map(|address| BbmdCfg {
+            address,
+            port: conn_u64(conn, "bbmd_port").unwrap_or(47808) as u16,
+            ttl_secs: conn_u64(conn, "bbmd_ttl_secs").unwrap_or(300) as u16,
+        });
+    let bind_failure_policy = match conn_str(conn, "bind_failure_policy")
+        .unwrap_or_else(|| "skip".into())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "strict" => BindFailurePolicy::Strict,
+        _ => BindFailurePolicy::Skip,
+    };
     ConnCfg {
         interface,
+        discover_all_interfaces: conn_bool(conn, "discover_all_interfaces"),
+        bind_failure_policy,
         port,
         broadcast,
+        bbmd,
         discovery_window_ms: conn_u64(conn, "discovery_window_ms").unwrap_or(3000),
         apdu_timeout_ms: conn_u64(conn, "apdu_timeout_ms").unwrap_or(2000),
         poll_concurrency: conn_u64(conn, "poll_concurrency").unwrap_or(8) as usize,
@@ -86,7 +198,14 @@ fn parse_conn(conn: &Addressing, interfaces: &[NetworkInterface]) -> ConnCfg {
 }
 
 async fn build_client(cfg: &ConnCfg, interface: Ipv4Addr) -> Result<BacnetIpClient> {
-    let transport = BipTransport::new(interface, cfg.port, cfg.broadcast);
+    let mut transport = BipTransport::new(interface, cfg.port, cfg.broadcast);
+    if let Some(bbmd) = &cfg.bbmd {
+        transport.register_as_foreign_device(ForeignDeviceConfig {
+            bbmd_ip: bbmd.address,
+            bbmd_port: bbmd.port,
+            ttl: bbmd.ttl_secs,
+        });
+    }
     BACnetClient::<BipTransport>::generic_builder()
         .transport(transport)
         .apdu_timeout_ms(cfg.apdu_timeout_ms)
@@ -95,14 +214,29 @@ async fn build_client(cfg: &ConnCfg, interface: Ipv4Addr) -> Result<BacnetIpClie
         .map_err(|error| anyhow!(error.to_string()))
 }
 
-fn target_interfaces(interfaces: &[NetworkInterface]) -> Vec<Ipv4Addr> {
-    if interfaces.is_empty() {
-        return vec![Ipv4Addr::UNSPECIFIED];
+fn target_interfaces(cfg: &ConnCfg, interfaces: &[NetworkInterface]) -> Vec<Ipv4Addr> {
+    if cfg.discover_all_interfaces {
+        if interfaces.is_empty() {
+            return vec![Ipv4Addr::UNSPECIFIED];
+        }
+        let mut addrs: Vec<Ipv4Addr> = interfaces.iter().map(|i| i.addr).collect();
+        addrs.sort();
+        addrs.dedup();
+        addrs
+    } else {
+        vec![cfg.interface]
     }
-    let mut addrs: Vec<Ipv4Addr> = interfaces.iter().map(|i| i.addr).collect();
-    addrs.sort();
-    addrs.dedup();
-    addrs
+}
+
+fn resolve_bind_interface(cfg: &ConnCfg, interfaces: &[NetworkInterface]) -> Ipv4Addr {
+    if cfg.interface.is_unspecified() {
+        interfaces
+            .first()
+            .map(|i| i.addr)
+            .unwrap_or(Ipv4Addr::UNSPECIFIED)
+    } else {
+        cfg.interface
+    }
 }
 
 fn format_bip_mac(mac: &[u8]) -> String {
@@ -144,19 +278,6 @@ async fn collect_devices(client: &BacnetIpClient) -> Vec<DiscoveredDevice> {
     devices
 }
 
-async fn refresh_device_table(
-    client: &BacnetIpClient,
-    cfg: &ConnCfg,
-    instances: &[u32],
-) -> Result<()> {
-    if instances.is_empty() {
-        return Ok(());
-    }
-    client.who_is(None, None).await?;
-    tokio::time::sleep(Duration::from_millis(cfg.discovery_window_ms)).await;
-    Ok(())
-}
-
 #[async_trait::async_trait]
 impl RepublishProtocol for BacnetRepublishProtocol {
     fn capabilities(&self) -> &Capabilities {
@@ -169,11 +290,15 @@ impl RepublishProtocol for BacnetRepublishProtocol {
         let mut by_key: HashMap<String, DiscoveredDevice> = HashMap::new();
         let mut warnings = Vec::new();
 
-        for interface in target_interfaces(&interfaces) {
+        for interface in target_interfaces(&cfg, &interfaces) {
             let mut client = match build_client(&cfg, interface).await {
                 Ok(client) => client,
                 Err(error) => {
-                    warnings.push(format!("bind failed on {interface}: {error:#}"));
+                    let message = format!("bind failed on {interface}: {error:#}");
+                    if cfg.bind_failure_policy == BindFailurePolicy::Strict {
+                        return Err(anyhow!(message));
+                    }
+                    warnings.push(message);
                     continue;
                 }
             };
@@ -218,19 +343,21 @@ impl RepublishProtocol for BacnetRepublishProtocol {
         }
         let interfaces = ipv4_interfaces();
         let cfg = parse_conn(conn, &interfaces);
-        let mut client = build_client(&cfg, cfg.interface).await?;
+        let mut guard = self.ensure_poll_client(&cfg, &interfaces).await?;
+        let client = &mut guard.as_mut().expect("session initialized").client;
+        poll_with_client(client, &enabled, cfg.poll_concurrency).await
+    }
 
-        let instances: Vec<u32> = enabled
-            .iter()
-            .filter_map(|p| addr_u32(p, "device_instance"))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-        refresh_device_table(&client, &cfg, &instances).await.ok();
-
-        let outcome = poll_with_client(&client, &enabled, cfg.poll_concurrency).await;
-        client.stop().await.ok();
-        outcome
+    async fn refresh_devices(
+        &self,
+        conn: &Addressing,
+        device_instances: &[u32],
+    ) -> Result<RefreshOutcome> {
+        let interfaces = ipv4_interfaces();
+        let cfg = parse_conn(conn, &interfaces);
+        let mut guard = self.ensure_poll_client(&cfg, &interfaces).await?;
+        let client = &guard.as_mut().expect("session initialized").client;
+        refresh_device_table(client, &cfg, device_instances).await
     }
 }
 
@@ -281,6 +408,15 @@ async fn scan_objects(
         .await
         .map(|v| v.to_string())
         .filter(|v| !v.trim().is_empty());
+        let description = read_scalar(
+            client,
+            device_instance,
+            object_identifier,
+            PropertyIdentifier::DESCRIPTION,
+        )
+        .await
+        .map(|v| v.to_string())
+        .filter(|v| !v.trim().is_empty());
         let units = read_scalar(
             client,
             device_instance,
@@ -310,7 +446,7 @@ async fn scan_objects(
         points.push(DiscoveredPoint {
             device_key: dev_key.to_string(),
             name,
-            description: None,
+            description,
             units,
             value: present,
             addressing,
@@ -320,7 +456,7 @@ async fn scan_objects(
     Ok(points)
 }
 
-async fn read_scalar(
+pub(crate) async fn read_scalar(
     client: &BacnetIpClient,
     device_instance: u32,
     object_identifier: ObjectIdentifier,
@@ -383,7 +519,7 @@ impl PollRequest {
     }
 }
 
-async fn poll_with_client(
+pub(crate) async fn poll_with_client(
     client: &BacnetIpClient,
     points: &[PointConfig],
     concurrency: usize,
