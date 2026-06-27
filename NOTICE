@@ -24,3 +24,9 @@ Third-party components with different licenses
    port is ephemeral (port = 0); upstream sends broadcasts to the ephemeral
    bind port, which breaks BACnet Who-Is discovery from an ephemeral-port client.
    The netix-republisher binary repo vendors its own copy of this patched crate.
+
+3. tokio-modbus
+   Used by: crates/proto-modbus (when built with the `republish` feature).
+   License: MIT (see https://github.com/slowtec/tokio-modbus/blob/main/LICENSE).
+   Depending on / linking this crate from this Apache-2.0 workspace is permitted
+   by the MIT license.

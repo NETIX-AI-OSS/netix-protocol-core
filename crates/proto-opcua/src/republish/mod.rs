@@ -5,7 +5,7 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use opcua::client::{ClientBuilder, IdentityToken, Session};
+use opcua::client::{ClientBuilder, IdentityToken, Password, Session};
 use opcua::types::{
     BrowseDescription, BrowseDirection, DataValue, MessageSecurityMode, NodeClass, NodeId,
     ObjectId, QualifiedName, ReadValueId, ReferenceDescription, ReferenceTypeId,
@@ -20,6 +20,7 @@ use republish_core::RepublishProtocol;
 use tokio::task::JoinHandle;
 
 const SECURITY_NONE: &str = "http://opcfoundation.org/UA/SecurityPolicy#None";
+const SECURITY_BASIC256SHA256: &str = "http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256";
 /// OPC UA `Value` attribute id (Part 6).
 const ATTR_VALUE: u32 = 13;
 
@@ -51,28 +52,60 @@ impl Connection {
     }
 }
 
+fn security_policy_url(conn: &Addressing) -> Result<&'static str> {
+    let policy = conn_str(conn, "security_policy").unwrap_or_else(|| "none".into());
+    match policy.to_ascii_lowercase().as_str() {
+        "none" => Ok(SECURITY_NONE),
+        "basic256sha256" => Ok(SECURITY_BASIC256SHA256),
+        other => Err(anyhow!("unsupported security_policy '{other}'")),
+    }
+}
+
+fn security_mode(conn: &Addressing) -> Result<MessageSecurityMode> {
+    let mode = conn_str(conn, "security_mode").unwrap_or_else(|| "none".into());
+    match mode.to_ascii_lowercase().as_str() {
+        "none" => Ok(MessageSecurityMode::None),
+        "sign" => Ok(MessageSecurityMode::Sign),
+        "sign_encrypt" => Ok(MessageSecurityMode::SignAndEncrypt),
+        other => Err(anyhow!("unsupported security_mode '{other}'")),
+    }
+}
+
+fn identity_token(conn: &Addressing) -> IdentityToken {
+    let username = conn_str(conn, "username").unwrap_or_default();
+    let password = conn_str(conn, "password").unwrap_or_default();
+    if username.trim().is_empty() {
+        IdentityToken::Anonymous
+    } else {
+        IdentityToken::UserName(username, Password::from(password))
+    }
+}
+
 async fn connect(conn: &Addressing) -> Result<Connection> {
     let url =
         conn_str(conn, "endpoint_url").ok_or_else(|| anyhow!("OPC UA endpoint_url is required"))?;
+    let policy = security_policy_url(conn)?;
+    let mode = security_mode(conn)?;
+    if policy != SECURITY_NONE && mode == MessageSecurityMode::None {
+        return Err(anyhow!(
+            "security_mode 'none' requires security_policy 'none'"
+        ));
+    }
+
     let mut client = ClientBuilder::new()
         .application_name("NETIX Republisher")
         .application_uri("urn:netix:republisher")
         .product_uri("urn:netix:republisher")
-        .create_sample_keypair(false)
+        .create_sample_keypair(policy != SECURITY_NONE)
         .trust_server_certs(true)
         .session_retry_limit(1)
         .client()
         .map_err(|errors| anyhow!("OPC UA client build failed: {errors:?}"))?;
 
-    // Username/password is accepted via capabilities but the default flow is
-    // anonymous + None security (matching the simulator's default endpoint).
-    let identity = IdentityToken::Anonymous;
+    let identity = identity_token(conn);
 
     let (session, event_loop) = client
-        .connect_to_matching_endpoint(
-            (url.as_str(), SECURITY_NONE, MessageSecurityMode::None),
-            identity,
-        )
+        .connect_to_matching_endpoint((url.as_str(), policy, mode), identity)
         .await
         .map_err(|e| anyhow!("connect to {url} failed: {e}"))?;
     let handle = event_loop.spawn();
@@ -339,4 +372,36 @@ fn reference_name(reference: &ReferenceDescription, node_id: &NodeId) -> String 
         return browse;
     }
     node_id.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proto_api::Addressing;
+
+    #[test]
+    fn maps_security_fields_from_addressing() {
+        let mut conn = Addressing::new();
+        conn.insert(
+            "security_policy".into(),
+            serde_json::json!("basic256sha256"),
+        );
+        conn.insert("security_mode".into(), serde_json::json!("sign"));
+        assert_eq!(security_policy_url(&conn).unwrap(), SECURITY_BASIC256SHA256);
+        assert_eq!(security_mode(&conn).unwrap(), MessageSecurityMode::Sign);
+    }
+
+    #[test]
+    fn username_identity_when_credentials_present() {
+        let mut conn = Addressing::new();
+        conn.insert("username".into(), serde_json::json!("operator"));
+        conn.insert("password".into(), serde_json::json!("secret"));
+        match identity_token(&conn) {
+            IdentityToken::UserName(user, pass) => {
+                assert_eq!(user, "operator");
+                assert_eq!(pass.0, "secret");
+            }
+            other => panic!("expected username token, got {other:?}"),
+        }
+    }
 }

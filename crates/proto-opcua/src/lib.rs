@@ -38,7 +38,7 @@ pub fn capabilities() -> Capabilities {
                 "none",
             ),
             FieldSpec::text("username", "Username"),
-            FieldSpec::text("password", "Password"),
+            FieldSpec::secret("password", "Password"),
         ],
         addressing_fields: vec![FieldSpec::text("node_id", "Node ID").with_help("ns=2;s=...")],
         default_port: 4840,

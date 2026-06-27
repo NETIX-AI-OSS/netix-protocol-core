@@ -276,6 +276,38 @@ pub fn labeled_input<'a, Message: Clone + 'a>(
     .into()
 }
 
+pub fn labeled_secret_input<'a, Message: Clone + 'a>(
+    palette: Palette,
+    label: &'a str,
+    hint: &'a str,
+    value: &'a str,
+    on_input: impl Fn(String) -> Message + 'a,
+) -> Element<'a, Message> {
+    column![
+        row![
+            text(label).size(13).color(palette.text),
+            text(hint).size(12).color(palette.subtle)
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+        text_input(label, value)
+            .on_input(on_input)
+            .secure(true)
+            .padding(Padding {
+                top: 9.0,
+                right: 10.0,
+                bottom: 9.0,
+                left: 10.0,
+            })
+            .size(14)
+            .width(Length::Fill)
+            .style(move |_theme, status| input_style(palette, status)),
+    ]
+    .spacing(5)
+    .width(Length::Fill)
+    .into()
+}
+
 pub fn field_readout<'a, Message: 'a>(
     palette: Palette,
     label: impl Into<String>,

@@ -10,7 +10,9 @@ use std::collections::HashMap;
 
 use proto_api::{Addressing, Capabilities};
 
-use crate::model::{DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig, PollOutcome};
+use crate::model::{
+    DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig, PollOutcome, RefreshOutcome,
+};
 
 #[async_trait::async_trait]
 pub trait RepublishProtocol: Send + Sync {
@@ -30,6 +32,16 @@ pub trait RepublishProtocol: Send + Sync {
 
     /// Read current values for the configured points.
     async fn poll(&self, conn: &Addressing, points: &[PointConfig]) -> anyhow::Result<PollOutcome>;
+
+    /// Re-resolve device addresses (Who-Is / I-Am). Default: no-op, all resolved.
+    async fn refresh_devices(
+        &self,
+        conn: &Addressing,
+        device_instances: &[u32],
+    ) -> anyhow::Result<RefreshOutcome> {
+        let _ = (conn, device_instances);
+        Ok(RefreshOutcome::default())
+    }
 }
 
 /// Constructs a protocol adapter instance.

@@ -3975,6 +3975,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bacnet-client",
+ "bacnet-encoding",
+ "bacnet-network",
  "bacnet-rs",
  "bacnet-services",
  "bacnet-transport",
@@ -3995,6 +3997,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "futures-util",
  "log",
  "proto-api",
  "republish-core",

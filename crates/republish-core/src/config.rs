@@ -14,7 +14,7 @@ use crate::model::{default_true, PointConfig};
 use crate::topic::{telemetry_topic, validate_publish_topic};
 
 const CONFIG_FILE_NAME: &str = "config.toml";
-pub const CURRENT_CONFIG_VERSION: u32 = 1;
+pub const CURRENT_CONFIG_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfig {
@@ -120,6 +120,22 @@ impl AppConfig {
     /// Mutable connection settings for the active protocol, created on demand.
     pub fn connection_mut(&mut self) -> &mut Addressing {
         self.connections.entry(self.protocol.clone()).or_default()
+    }
+
+    /// Stamps the in-memory config with the current version and applies upgrades.
+    pub fn migrate(&mut self) {
+        if self.version < 2 {
+            if let Some(conn) = self.connections.get_mut("bacnet") {
+                let legacy_port = conn
+                    .get("port")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(47808);
+                if legacy_port == 47808 {
+                    conn.insert("port".into(), serde_json::json!(0));
+                }
+            }
+        }
+        self.version = CURRENT_CONFIG_VERSION;
     }
 
     pub fn sanitized_for_save(&self) -> Self {
@@ -242,8 +258,9 @@ pub fn load_or_default() -> (AppConfig, PathBuf, String) {
 pub fn load_from_path(path: &Path) -> Result<AppConfig> {
     let raw =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let config: AppConfig =
+    let mut config: AppConfig =
         toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))?;
+    config.migrate();
     Ok(config)
 }
 

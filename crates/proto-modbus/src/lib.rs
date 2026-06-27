@@ -3,8 +3,8 @@
 //! - With the `sim` feature it provides [`register_sim`], a read-only Modbus TCP
 //!   server that exposes a `sim-core` simulation as holding/input registers and
 //!   coils/discrete inputs.
-//! - With the `republish` feature it provides the Modbus client used by the
-//!   republisher (added in a later step).
+//! - With the `republish` feature it provides the Modbus TCP client used by the
+//!   republisher for discovery, browse, and polling.
 
 use proto_api::{BrowseKind, Capabilities, DiscoveryKind, FieldSpec};
 
@@ -28,10 +28,12 @@ pub fn capabilities() -> Capabilities {
         discovery: DiscoveryKind::SubnetScan,
         browse: BrowseKind::RegisterScan,
         connection_fields: vec![
-            FieldSpec::text("host", "Host"),
+            FieldSpec::text("host", "Host or CIDR").with_help("192.168.1.10 or 192.168.1.0/24"),
             FieldSpec::u32("port", "Port", 502),
             FieldSpec::u32("unit_id", "Unit ID", 1),
             FieldSpec::u32("timeout_ms", "Timeout (ms)", 1000),
+            FieldSpec::u32("scan_concurrency", "Scan concurrency", 32),
+            FieldSpec::u32("max_hosts", "Max hosts per scan", 256),
         ],
         addressing_fields: vec![
             FieldSpec::enumeration("table", "Register table", TABLES, "holding"),

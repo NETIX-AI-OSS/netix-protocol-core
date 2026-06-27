@@ -55,6 +55,20 @@ pub fn merge_imported_points(
     }
 }
 
+/// Build a configured point from a browsed/discovered point.
+pub fn point_from_discovered(
+    found: &crate::model::DiscoveredPoint,
+    poll_interval_secs: u64,
+) -> PointConfig {
+    PointConfig {
+        enabled: true,
+        device_key: found.device_key.clone(),
+        addressing: found.addressing.clone(),
+        tag_path: found.suggested_tag_path.clone(),
+        poll_interval_secs,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

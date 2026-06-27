@@ -44,10 +44,7 @@ pub fn detect_run_mode(no_tui_flag: bool) -> RunMode {
     if no_tui_flag {
         return RunMode::Headless;
     }
-    if std::env::var("SIM_NO_TUI")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-    {
+    if env_no_tui() {
         return RunMode::Headless;
     }
     if std::io::stdout().is_terminal() {
@@ -55,6 +52,18 @@ pub fn detect_run_mode(no_tui_flag: bool) -> RunMode {
     } else {
         RunMode::Headless
     }
+}
+
+/// Returns true when headless mode is requested via environment variable.
+///
+/// Accepts both the generic `SIM_NO_TUI` and the legacy BACnet name
+/// `BACNET_SIM_NO_TUI` for backward compatibility with existing scripts.
+fn env_no_tui() -> bool {
+    ["SIM_NO_TUI", "BACNET_SIM_NO_TUI"].into_iter().any(|name| {
+        std::env::var(name)
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
 }
 
 pub fn parse_args() -> (bool, PathBuf) {
@@ -92,7 +101,7 @@ fn print_help() {
     eprintln!(
         "Usage: simulator [OPTIONS] [CONFIG_PATH]\n\n\
          Options:\n\
-           --no-tui          Log-only mode (also SIM_NO_TUI=1)\n\
+           --no-tui          Log-only mode (also SIM_NO_TUI=1 or BACNET_SIM_NO_TUI=1)\n\
            -c, --config PATH Config file (default: config.yaml)\n\
            -h, --help        Show this help\n"
     );
@@ -252,4 +261,40 @@ pub fn bootstrap_config(config_path: &PathBuf) -> Result<SimulatorConfig, Config
 
 pub fn build_simulation(config: &SimulatorConfig) -> Result<Simulation, ConfigError> {
     Simulation::new(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_env(name: &str, value: Option<&str>, f: impl FnOnce()) {
+        let previous = std::env::var(name).ok();
+        match value {
+            Some(v) => unsafe { std::env::set_var(name, v) },
+            None => unsafe { std::env::remove_var(name) },
+        }
+        f();
+        match previous {
+            Some(v) => unsafe { std::env::set_var(name, v) },
+            None => unsafe { std::env::remove_var(name) },
+        }
+    }
+
+    #[test]
+    fn sim_no_tui_env_triggers_headless() {
+        with_env("SIM_NO_TUI", Some("1"), || {
+            with_env("BACNET_SIM_NO_TUI", None, || {
+                assert_eq!(detect_run_mode(false), RunMode::Headless);
+            });
+        });
+    }
+
+    #[test]
+    fn bacnet_sim_no_tui_alias_triggers_headless() {
+        with_env("BACNET_SIM_NO_TUI", Some("true"), || {
+            with_env("SIM_NO_TUI", None, || {
+                assert_eq!(detect_run_mode(false), RunMode::Headless);
+            });
+        });
+    }
 }

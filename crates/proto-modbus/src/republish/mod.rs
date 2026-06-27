@@ -1,10 +1,13 @@
 //! Modbus TCP republisher adapter: manual endpoint connection, register-range
 //! browse, and value polling with per-point datatype/word-order/scale decoding.
 
-use std::net::{SocketAddr, ToSocketAddrs};
+mod scan;
+
+use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context as _, Result};
+use futures_util::stream::{self, StreamExt};
 use proto_api::{Addressing, Capabilities};
 use republish_core::model::{
     now_millis, DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig, PointFailure,
@@ -30,10 +33,25 @@ pub fn republish_factory() -> Box<dyn RepublishProtocol> {
 }
 
 struct ConnParams {
-    addr: SocketAddr,
+    host: String,
+    port: u16,
     unit: u8,
     timeout: Duration,
-    label: String,
+    scan_concurrency: usize,
+    max_hosts: u32,
+}
+
+impl Clone for ConnParams {
+    fn clone(&self) -> Self {
+        Self {
+            host: self.host.clone(),
+            port: self.port,
+            unit: self.unit,
+            timeout: self.timeout,
+            scan_concurrency: self.scan_concurrency,
+            max_hosts: self.max_hosts,
+        }
+    }
 }
 
 fn conn_str(conn: &Addressing, key: &str) -> Option<String> {
@@ -55,28 +73,67 @@ fn parse_conn(conn: &Addressing) -> Result<ConnParams> {
     let port = conn_u64(conn, "port").unwrap_or(502) as u16;
     let unit = conn_u64(conn, "unit_id").unwrap_or(1) as u8;
     let timeout_ms = conn_u64(conn, "timeout_ms").unwrap_or(1000);
-    let addr = format!("{}:{}", host.trim(), port)
-        .to_socket_addrs()
-        .with_context(|| format!("failed to resolve {host}:{port}"))?
-        .next()
-        .ok_or_else(|| anyhow!("no address for {host}:{port}"))?;
     Ok(ConnParams {
-        addr,
+        host: host.trim().to_string(),
+        port,
         unit,
         timeout: Duration::from_millis(timeout_ms.max(100)),
-        label: format!("{}:{}", host.trim(), port),
+        scan_concurrency: conn_u64(conn, "scan_concurrency").unwrap_or(32).max(1) as usize,
+        max_hosts: conn_u64(conn, "max_hosts").unwrap_or(256).max(1) as u32,
     })
 }
 
-async fn connect(params: &ConnParams) -> Result<Context> {
+fn socket_addr(host: &str, port: u16) -> Result<SocketAddr> {
+    format!("{host}:{port}")
+        .to_socket_addrs()
+        .with_context(|| format!("failed to resolve {host}:{port}"))?
+        .next()
+        .ok_or_else(|| anyhow!("no address for {host}:{port}"))
+}
+
+fn endpoint_label(host: &str, port: u16) -> String {
+    format!("{host}:{port}")
+}
+
+async fn connect_addr(
+    addr: SocketAddr,
+    unit: u8,
+    connect_timeout: Duration,
+    label: &str,
+) -> Result<Context> {
     let ctx = timeout(
-        params.timeout,
-        tokio_modbus::client::tcp::connect_slave(params.addr, Slave(params.unit)),
+        connect_timeout,
+        tokio_modbus::client::tcp::connect_slave(addr, Slave(unit)),
     )
     .await
-    .map_err(|_| anyhow!("connect to {} timed out", params.label))?
-    .with_context(|| format!("failed to connect to {}", params.label))?;
+    .map_err(|_| anyhow!("connect to {label} timed out"))?
+    .with_context(|| format!("failed to connect to {label}"))?;
     Ok(ctx)
+}
+
+async fn connect(params: &ConnParams) -> Result<Context> {
+    let addr = socket_addr(&params.host, params.port)?;
+    connect_addr(
+        addr,
+        params.unit,
+        params.timeout,
+        &endpoint_label(&params.host, params.port),
+    )
+    .await
+}
+
+async fn probe_host(ip: Ipv4Addr, params: &ConnParams) -> Option<DiscoveredDevice> {
+    let addr = SocketAddr::from((ip, params.port));
+    let host_label = endpoint_label(&ip.to_string(), params.port);
+    let mut ctx = connect_addr(addr, params.unit, params.timeout, &host_label)
+        .await
+        .ok()?;
+    ctx.read_holding_registers(0, 1).await.ok()?.ok()?;
+    Some(DiscoveredDevice {
+        key: format!("modbus-{}", host_label.replace([':', '.'], "-")),
+        address: host_label,
+        detail: format!("unit {}", params.unit),
+    })
 }
 
 #[async_trait::async_trait]
@@ -87,17 +144,35 @@ impl RepublishProtocol for ModbusRepublishProtocol {
 
     async fn discover(&self, conn: &Addressing) -> Result<DiscoverOutcome> {
         let params = parse_conn(conn)?;
-        // Modbus TCP has no native discovery; verify connectivity and report the
-        // configured endpoint as a single device.
-        let mut ctx = connect(&params).await?;
-        let _ = ctx.read_holding_registers(0, 1).await; // touch the connection
-        let device = DiscoveredDevice {
-            key: format!("modbus-{}", params.label.replace([':', '.'], "-")),
-            address: params.label.clone(),
-            detail: format!("unit {}", params.unit),
-        };
+        let targets = scan::parse_host_targets(&params.host, params.max_hosts)?;
+        if targets.len() == 1 && !params.host.contains('/') {
+            let device = probe_host(targets[0], &params).await.ok_or_else(|| {
+                anyhow!(
+                    "no Modbus response at {}",
+                    endpoint_label(&params.host, params.port)
+                )
+            })?;
+            return Ok(DiscoverOutcome {
+                devices: vec![device],
+                warnings: vec![],
+            });
+        }
+
+        let found = stream::iter(targets)
+            .map(|ip| {
+                let params = params.clone();
+                async move { probe_host(ip, &params).await }
+            })
+            .buffer_unordered(params.scan_concurrency)
+            .filter_map(async |device| device)
+            .collect::<Vec<_>>()
+            .await;
+
+        let mut devices = found;
+        devices.sort_by(|a, b| a.address.cmp(&b.address));
+        devices.dedup_by(|a, b| a.address == b.address);
         Ok(DiscoverOutcome {
-            devices: vec![device],
+            devices,
             warnings: vec![],
         })
     }
@@ -121,23 +196,27 @@ impl RepublishProtocol for ModbusRepublishProtocol {
                     _ => ctx.read_input_registers(addr, 1).await,
                 };
                 let Ok(Ok(regs)) = read else {
-                    break; // reached the end of this table's range
+                    break;
                 };
-                let value = regs.first().copied().unwrap_or(0);
-                let mut addressing = Addressing::new();
-                addressing.insert("table".into(), serde_json::json!(table));
-                addressing.insert("address".into(), serde_json::json!(addr as u64));
-                addressing.insert("datatype".into(), serde_json::json!("u16"));
-                addressing.insert("word_order".into(), serde_json::json!("big"));
-                points.push(DiscoveredPoint {
-                    device_key: device.key.clone(),
-                    name: Some(format!("{table}[{addr}]")),
-                    description: None,
-                    units: None,
-                    value: Some(TelemetryValue::Number(value as f64)),
-                    addressing,
-                    suggested_tag_path: format!("{}/{table}_{addr}", device.key),
+                let value = TelemetryValue::Number(regs.first().copied().unwrap_or(0) as f64);
+                push_register_point(&mut points, device, table, addr, "u16", value);
+            }
+        }
+        for table in ["coil", "discrete"] {
+            for addr in 0..BROWSE_COUNT {
+                let read = match table {
+                    "coil" => ctx.read_coils(addr, 1).await,
+                    _ => ctx.read_discrete_inputs(addr, 1).await,
+                };
+                let Ok(Ok(bits)) = read else {
+                    break;
+                };
+                let value = TelemetryValue::Number(if bits.first().copied().unwrap_or(false) {
+                    1.0
+                } else {
+                    0.0
                 });
+                push_register_point(&mut points, device, table, addr, "bool", value);
             }
         }
         Ok(points)
@@ -163,6 +242,30 @@ impl RepublishProtocol for ModbusRepublishProtocol {
         }
         Ok(outcome)
     }
+}
+
+fn push_register_point(
+    points: &mut Vec<DiscoveredPoint>,
+    device: &DiscoveredDevice,
+    table: &str,
+    addr: u16,
+    datatype: &str,
+    value: TelemetryValue,
+) {
+    let mut addressing = Addressing::new();
+    addressing.insert("table".into(), serde_json::json!(table));
+    addressing.insert("address".into(), serde_json::json!(addr as u64));
+    addressing.insert("datatype".into(), serde_json::json!(datatype));
+    addressing.insert("word_order".into(), serde_json::json!("big"));
+    points.push(DiscoveredPoint {
+        device_key: device.key.clone(),
+        name: Some(format!("{table}[{addr}]")),
+        description: None,
+        units: None,
+        value: Some(value),
+        addressing,
+        suggested_tag_path: format!("{}/{table}_{addr}", device.key),
+    });
 }
 
 fn addr_str(point: &PointConfig, key: &str) -> Option<String> {

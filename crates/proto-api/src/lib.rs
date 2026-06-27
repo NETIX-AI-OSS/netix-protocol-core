@@ -115,6 +115,8 @@ pub enum FieldKind {
     Bool,
     /// A pick-list of allowed string values.
     Enum(Vec<String>),
+    /// Masked text input (passwords, passphrases).
+    Secret,
 }
 
 /// One protocol-specific configuration field, rendered dynamically by the UI so
@@ -169,6 +171,16 @@ impl FieldSpec {
             label: label.to_string(),
             kind: FieldKind::Enum(options.iter().map(|s| s.to_string()).collect()),
             default: Some(serde_json::json!(default)),
+            help: None,
+        }
+    }
+
+    pub fn secret(key: &str, label: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            label: label.to_string(),
+            kind: FieldKind::Secret,
+            default: None,
             help: None,
         }
     }

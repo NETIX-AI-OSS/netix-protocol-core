@@ -4,7 +4,7 @@
 //! - With the `sim` feature it provides [`register_sim`], a BACnet/IP server that
 //!   exposes a `sim-core` simulation.
 //! - With the `republish` feature it provides the discovery/browse/poll client
-//!   used by the republisher (added in a later step).
+//!   used by the republisher.
 
 use proto_api::{BrowseKind, Capabilities, DiscoveryKind, FieldSpec};
 
@@ -35,9 +35,28 @@ pub fn capabilities() -> Capabilities {
         browse: BrowseKind::ObjectList,
         connection_fields: vec![
             FieldSpec::text("interface", "Network interface (IPv4)")
-                .with_help("blank = all interfaces"),
+                .with_help("blank = first NIC; use with discover_all_interfaces"),
+            FieldSpec::bool(
+                "discover_all_interfaces",
+                "Discover on all interfaces",
+                false,
+            ),
+            FieldSpec::enumeration(
+                "bind_failure_policy",
+                "Bind failure policy",
+                &["skip", "strict"],
+                "skip",
+            ),
             FieldSpec::u32("port", "Local UDP port", 0).with_help("0 = ephemeral"),
             FieldSpec::text("broadcast_address", "Broadcast address").with_help("255.255.255.255"),
+            FieldSpec::text("bbmd_address", "BBMD address")
+                .with_help("optional foreign-device BBMD"),
+            FieldSpec::u32("bbmd_port", "BBMD port", 47808),
+            FieldSpec::u32("bbmd_ttl_secs", "BBMD TTL (s)", 300),
+            FieldSpec::u32("discovery_window_ms", "Discovery window (ms)", 3000),
+            FieldSpec::u32("apdu_timeout_ms", "APDU timeout (ms)", 2000),
+            FieldSpec::u32("poll_concurrency", "Poll concurrency", 8),
+            FieldSpec::u32("device_backoff_max_secs", "Device backoff max (s)", 300),
         ],
         addressing_fields: vec![
             FieldSpec::u32("device_instance", "Device instance", 0),
@@ -60,6 +79,9 @@ pub fn register_sim(registry: &mut sim_core::SimRegistry) {
 
 #[cfg(feature = "republish")]
 mod republish;
+
+#[cfg(feature = "republish")]
+pub use republish::test_support;
 
 /// Register the BACnet republisher adapter with a [`republish_core::RepublishRegistry`].
 #[cfg(feature = "republish")]
