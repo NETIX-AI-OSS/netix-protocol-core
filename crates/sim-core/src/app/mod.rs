@@ -253,7 +253,7 @@ pub fn restart_process() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Ensure a config file exists (writing the bundled sample if missing) and load
 /// it. Returns the parsed config or a [`ConfigError`] for the binary to report.
-pub fn bootstrap_config(config_path: &PathBuf) -> Result<SimulatorConfig, ConfigError> {
+pub fn bootstrap_config(config_path: &std::path::Path) -> Result<SimulatorConfig, ConfigError> {
     SimulatorConfig::ensure_config_file(config_path)?;
     let config_path_str = config_path.to_string_lossy();
     SimulatorConfig::load_from_file(&config_path_str)

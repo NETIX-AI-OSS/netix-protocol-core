@@ -299,6 +299,14 @@ mod tests {
     }
 
     #[test]
+    fn property_name_round_trips_known_identifiers() {
+        assert_eq!(
+            property_name(PropertyIdentifier::PRESENT_VALUE),
+            "present_value"
+        );
+    }
+
+    #[test]
     fn decodes_character_string_non_utf8_encoding_returns_hex() {
         // Tag 7, encoding 1 (UCS-2), two bytes 0xAB 0xCD
         let data: &[u8] = &[0xAB, 0xCD];

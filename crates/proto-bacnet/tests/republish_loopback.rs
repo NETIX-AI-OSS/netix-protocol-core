@@ -1,10 +1,5 @@
-//! Loopback: the OPC UA republish adapter connects to the OPC UA simulator
-//! adapter, browses its address space, and reads live values end-to-end.
-//!
-//! Mirrors the Modbus loopback (a real TCP server/client in-process). Value reads
-//! work against the bundled simulator: the server gives the simulation's nodes a
-//! namespace distinct from the application URI, so reads route to the simulator's
-//! node manager rather than the built-in diagnostics manager.
+//! Loopback: the BACnet republish adapter discovers, browses, and polls the
+//! BACnet simulator adapter and decodes live values end-to-end.
 #![cfg(all(feature = "sim", feature = "republish"))]
 
 use std::collections::HashMap;
@@ -23,6 +18,10 @@ use tokio_util::sync::CancellationToken;
 
 use republish_core::model::PointConfig;
 use republish_core::RepublishRegistry;
+
+/// Device instance assigned by [`SimulatorConfig`] with `device_id_base: 1000`,
+/// one template block, and a single instance (`1100 + 0`).
+const DEVICE_INSTANCE: u32 = 1100;
 
 fn sim_config() -> SimulatorConfig {
     let mut templates = HashMap::new();
@@ -66,59 +65,70 @@ fn sim_config() -> SimulatorConfig {
 }
 
 #[tokio::test]
-async fn republisher_browses_and_reads_simulator_over_opcua() {
-    let port = 14840u16;
+async fn republisher_discovers_browses_and_polls_simulator_over_bacnet() {
+    // Port 0 binds the simulator on the protocol default (UDP/47808), matching
+    // sim-core's protocol listener behavior. The republish client uses an
+    // ephemeral local bind (connection port 0).
+    let sim_port = 0u16;
 
     let sim = Arc::new(Mutex::new(Simulation::new(&sim_config()).unwrap()));
     let cancel = CancellationToken::new();
     let mut sim_registry = SimRegistry::new();
-    proto_opcua::register_sim(&mut sim_registry);
-    let sim_factory = sim_registry.get("opcua").unwrap();
+    proto_bacnet::register_sim(&mut sim_registry);
+    let sim_factory = sim_registry.get("bacnet").unwrap();
     let adapter = sim_factory(&Addressing::new()).unwrap();
     let ctx = SimServeContext {
         sim: Arc::clone(&sim),
         metrics: Arc::new(AppMetrics::new()),
         log: None,
-        port,
+        port: sim_port,
         options: Addressing::new(),
         cancel: cancel.clone(),
     };
     let serve = tokio::spawn(async move {
         let _ = adapter.serve(ctx).await;
     });
-    // The simulator seeds the value cache once per second; allow the server to
-    // bind and the first refresh to land.
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
 
     let mut conn = Addressing::new();
-    conn.insert(
-        "endpoint_url".into(),
-        serde_json::json!(format!("opc.tcp://127.0.0.1:{port}/")),
-    );
+    conn.insert("interface".into(), serde_json::json!("127.0.0.1"));
+    conn.insert("port".into(), serde_json::json!(0));
+    conn.insert("broadcast_address".into(), serde_json::json!("127.0.0.1"));
+    conn.insert("discovery_window_ms".into(), serde_json::json!(300));
 
     let mut rep_registry = RepublishRegistry::new();
-    proto_opcua::register_republish(&mut rep_registry);
-    let proto = rep_registry.build("opcua").unwrap();
+    proto_bacnet::register_republish(&mut rep_registry);
+    let proto = rep_registry.build("bacnet").unwrap();
 
-    let device = proto.discover(&conn).await.unwrap().devices.remove(0);
+    let discover = proto.discover(&conn).await.unwrap();
+    assert_eq!(
+        discover.warnings.len(),
+        0,
+        "unexpected discovery warnings: {:?}",
+        discover.warnings
+    );
+    assert_eq!(discover.devices.len(), 1, "expected one simulated device");
+    let device = discover.devices.into_iter().next().unwrap();
+    assert_eq!(device.key, format!("device_{DEVICE_INSTANCE}"));
+
     let browsed = proto.browse(&conn, &device).await.unwrap();
+    assert!(
+        browsed.warnings.is_empty(),
+        "unexpected browse warnings: {:?}",
+        browsed.warnings
+    );
+    assert!(!browsed.points.is_empty(), "browse should find BACnet objects");
     let point = browsed
         .points
         .iter()
-        .find(|p| p.name.as_deref() == Some("temp") && p.suggested_tag_path.contains("DEV-001"))
-        .unwrap_or_else(|| panic!("browse should surface the simulated variable, got {browsed:?}"));
-    assert!(
-        point.description.as_deref().is_some_and(|d| d.contains("Simulated")),
-        "expected description metadata, got {:?}",
-        point.description
-    );
-    assert_eq!(
-        point.units.as_deref(),
-        Some("degrees_celsius"),
-        "expected engineering units metadata"
-    );
+        .find(|p| {
+            p.addressing
+                .get("object_type")
+                .and_then(|v| v.as_str())
+                == Some("analog_input")
+        })
+        .unwrap_or_else(|| panic!("browse should surface analog_input, got {browsed:?}"));
 
-    // Poll the browsed node and confirm the live value round-trips.
     let cfg = PointConfig {
         enabled: true,
         device_key: device.key.clone(),
@@ -126,6 +136,15 @@ async fn republisher_browses_and_reads_simulator_over_opcua() {
         tag_path: point.suggested_tag_path.clone(),
         ..PointConfig::default()
     };
+    let refresh = proto
+        .refresh_devices(&conn, std::slice::from_ref(&DEVICE_INSTANCE))
+        .await
+        .unwrap();
+    assert!(
+        refresh.unresolved.is_empty(),
+        "device should resolve before poll: {:?}",
+        refresh.unresolved
+    );
     let outcome = proto.poll(&conn, std::slice::from_ref(&cfg)).await.unwrap();
     assert_eq!(
         outcome.failures.len(),

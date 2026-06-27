@@ -128,7 +128,7 @@ async fn republisher_polls_simulator_over_modbus() {
     // Browse should surface registers too.
     let device = proto.discover(&conn).await.unwrap().devices.remove(0);
     let browsed = proto.browse(&conn, &device).await.unwrap();
-    assert!(!browsed.is_empty(), "browse should find registers");
+    assert!(!browsed.points.is_empty(), "browse should find registers");
 
     cancel.cancel();
     let _ = serve.await;

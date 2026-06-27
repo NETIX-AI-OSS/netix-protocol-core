@@ -98,4 +98,17 @@ mod tests {
         assert_eq!(result.points.len(), 2);
         assert_eq!(result.points[0].tag_path, "PLC1/SupplyTemp");
     }
+
+    #[test]
+    fn merge_dedups_duplicate_identities_from_scan_all() {
+        let existing = vec![point("PLC1", 1, "PLC1/SupplyTemp")];
+        let imported = vec![
+            point("PLC1", 1, "PLC1/SupplyTemp"),
+            point("PLC1", 1, "PLC1/SupplyTemp"),
+        ];
+        let result = merge_imported_points(&existing, &imported);
+        assert_eq!(result.added, 0);
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.points.len(), 1);
+    }
 }

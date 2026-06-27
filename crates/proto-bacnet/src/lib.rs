@@ -83,6 +83,9 @@ mod republish;
 #[cfg(feature = "republish")]
 pub use republish::test_support;
 
+#[cfg(feature = "republish")]
+pub use republish::value::{decode_scalar_value, DecodeError};
+
 /// Register the BACnet republisher adapter with a [`republish_core::RepublishRegistry`].
 #[cfg(feature = "republish")]
 pub fn register_republish(registry: &mut republish_core::RepublishRegistry) {

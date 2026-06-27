@@ -1,0 +1,65 @@
+[advisories]
+version = 2
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+]
+
+[[licenses.exceptions]]
+name = "async-opcua"
+allow = ["MPL-2.0"]
+reason = "MPL-2.0 file-level copyleft is confined to proto-opcua per NOTICE"
+
+[[licenses.exceptions]]
+name = "async-opcua-client"
+allow = ["MPL-2.0"]
+reason = "transitive async-opcua dependency"
+
+[[licenses.exceptions]]
+name = "async-opcua-core"
+allow = ["MPL-2.0"]
+reason = "transitive async-opcua dependency"
+
+[[licenses.exceptions]]
+name = "async-opcua-crypto"
+allow = ["MPL-2.0"]
+reason = "transitive async-opcua dependency"
+
+[[licenses.exceptions]]
+name = "async-opcua-nodes"
+allow = ["MPL-2.0"]
+reason = "transitive async-opcua dependency"
+
+[[licenses.exceptions]]
+name = "async-opcua-server"
+allow = ["MPL-2.0"]
+reason = "transitive async-opcua dependency"
+
+[[licenses.exceptions]]
+name = "async-opcua-types"
+allow = ["MPL-2.0"]
+reason = "transitive async-opcua dependency"
+
+[[licenses.exceptions]]
+name = "async-opcua-core-namespace"
+allow = ["MPL-2.0"]
+reason = "transitive async-opcua dependency"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"

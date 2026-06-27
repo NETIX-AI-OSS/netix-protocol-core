@@ -327,8 +327,10 @@ mod tests {
     fn config_round_trips_toml() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.toml");
-        let mut config = AppConfig::default();
-        config.protocol = "modbus".into();
+        let mut config = AppConfig {
+            protocol: "modbus".into(),
+            ..Default::default()
+        };
         config
             .connection_mut()
             .insert("host".into(), serde_json::json!("192.168.1.50"));
@@ -352,5 +354,59 @@ mod tests {
             loaded.connection().get("host"),
             Some(&serde_json::json!("192.168.1.50"))
         );
+    }
+
+    #[test]
+    fn migrate_rewrites_legacy_bacnet_port() {
+        let mut config = AppConfig {
+            version: 1,
+            ..AppConfig::default()
+        };
+        config.connections.insert(
+            "bacnet".into(),
+            {
+                let mut conn = Addressing::new();
+                conn.insert("port".into(), serde_json::json!(47808));
+                conn
+            },
+        );
+        config.migrate();
+        assert_eq!(config.version, CURRENT_CONFIG_VERSION);
+        assert_eq!(
+            config.connections["bacnet"].get("port"),
+            Some(&serde_json::json!(0))
+        );
+    }
+
+    #[test]
+    fn validate_rejects_empty_host_and_zero_port() {
+        let mut config = AppConfig::default();
+        config.mqtt.host = "  ".into();
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.mqtt.port = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_cert_without_key() {
+        let mut config = AppConfig::default();
+        config.mqtt.client_cert_path = Some("/tmp/cert.pem".into());
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .contains("configured together"));
+    }
+
+    #[test]
+    fn validate_rejects_zero_poll_interval_for_enabled_points() {
+        let mut config = AppConfig::default();
+        config.points.push(PointConfig {
+            enabled: true,
+            poll_interval_secs: 0,
+            ..PointConfig::default()
+        });
+        assert!(config.validate().is_err());
     }
 }

@@ -7,14 +7,14 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use opcua::client::{ClientBuilder, IdentityToken, Password, Session};
 use opcua::types::{
-    BrowseDescription, BrowseDirection, DataValue, MessageSecurityMode, NodeClass, NodeId,
-    ObjectId, QualifiedName, ReadValueId, ReferenceDescription, ReferenceTypeId,
-    TimestampsToReturn, Variant,
+    BrowseDescription, BrowseDirection, DataValue, EUInformation,
+    MessageSecurityMode, NodeClass, NodeId, ObjectId, QualifiedName, ReadValueId,
+    ReferenceDescription, ReferenceTypeId, TimestampsToReturn, Variant,
 };
 use proto_api::{Addressing, Capabilities};
 use republish_core::model::{
-    json_scalar, now_millis, DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig,
-    PointFailure, PointSample, PollOutcome, TelemetryValue,
+    json_scalar, now_millis, BrowseOutcome, DiscoverOutcome, DiscoveredDevice, DiscoveredPoint,
+    PointConfig, PointFailure, PointSample, PollOutcome, TelemetryValue,
 };
 use republish_core::RepublishProtocol;
 use tokio::task::JoinHandle;
@@ -23,6 +23,8 @@ const SECURITY_NONE: &str = "http://opcfoundation.org/UA/SecurityPolicy#None";
 const SECURITY_BASIC256SHA256: &str = "http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256";
 /// OPC UA `Value` attribute id (Part 6).
 const ATTR_VALUE: u32 = 13;
+/// OPC UA `Description` attribute id (Part 6).
+const ATTR_DESCRIPTION: u32 = 5;
 
 pub struct OpcuaRepublishProtocol {
     caps: Capabilities,
@@ -79,6 +81,66 @@ fn identity_token(conn: &Addressing) -> IdentityToken {
     } else {
         IdentityToken::UserName(username, Password::from(password))
     }
+}
+
+fn discovery_client() -> Result<opcua::client::Client> {
+    ClientBuilder::new()
+        .application_name("NETIX Republisher")
+        .application_uri("urn:netix:republisher")
+        .product_uri("urn:netix:republisher")
+        .create_sample_keypair(false)
+        .trust_server_certs(true)
+        .session_retry_limit(1)
+        .client()
+        .map_err(|errors| anyhow!("OPC UA client build failed: {errors:?}"))
+}
+
+fn endpoint_device_key(server_name: &str, endpoint_url: &str) -> String {
+    let slug = server_name
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let base = if slug.is_empty() {
+        "opcua-server".to_string()
+    } else {
+        slug
+    };
+    let suffix = endpoint_url
+        .rsplit('/')
+        .next()
+        .unwrap_or(endpoint_url)
+        .replace([':', '.'], "-");
+    format!("{base}-{suffix}")
+}
+
+fn security_mode_label(mode: MessageSecurityMode) -> &'static str {
+    match mode {
+        MessageSecurityMode::None => "none",
+        MessageSecurityMode::Sign => "sign",
+        MessageSecurityMode::SignAndEncrypt => "sign_encrypt",
+        _ => "unknown",
+    }
+}
+
+fn security_policy_label(policy_uri: &str) -> String {
+    policy_uri
+        .rsplit('#')
+        .next()
+        .unwrap_or(policy_uri)
+        .to_ascii_lowercase()
+}
+
+fn endpoint_detail(endpoint: &opcua::types::EndpointDescription) -> String {
+    format!(
+        "policy={} mode={} level={}",
+        security_policy_label(endpoint.security_policy_uri.as_ref()),
+        security_mode_label(endpoint.security_mode),
+        endpoint.security_level
+    )
 }
 
 async fn connect(conn: &Addressing) -> Result<Connection> {
@@ -145,6 +207,79 @@ fn read_value_id(node_id: NodeId) -> ReadValueId {
     }
 }
 
+fn read_description_id(node_id: NodeId) -> ReadValueId {
+    ReadValueId {
+        node_id,
+        attribute_id: ATTR_DESCRIPTION,
+        index_range: Default::default(),
+        data_encoding: QualifiedName::null(),
+    }
+}
+
+fn localized_text_from_variant(variant: &Variant) -> Option<String> {
+    match variant {
+        Variant::LocalizedText(text) => {
+            let value = text.text.to_string();
+            if value.is_empty() { None } else { Some(value) }
+        }
+        Variant::String(value) => {
+            let value = value.to_string();
+            if value.is_empty() { None } else { Some(value) }
+        }
+        _ => None,
+    }
+}
+
+fn engineering_units_from_data_value(dv: &DataValue) -> Option<String> {
+    let variant = dv.value.as_ref()?;
+    let Variant::ExtensionObject(obj) = variant else {
+        return None;
+    };
+    let eu = obj.inner_as::<EUInformation>()?;
+    let display = eu.display_name.text.to_string();
+    if !display.is_empty() {
+        return Some(display);
+    }
+    let description = eu.description.text.to_string();
+    if description.is_empty() {
+        None
+    } else {
+        Some(description)
+    }
+}
+
+async fn engineering_units_for_variable(
+    session: &Arc<Session>,
+    variable_id: &NodeId,
+) -> Option<String> {
+    let to_browse = BrowseDescription {
+        node_id: variable_id.clone(),
+        browse_direction: BrowseDirection::Forward,
+        reference_type_id: ReferenceTypeId::HasProperty.into(),
+        include_subtypes: true,
+        node_class_mask: 0,
+        result_mask: 0x3F,
+    };
+    let results = session.browse(&[to_browse], 0, None).await.ok()?;
+    let references = results.into_iter().next()?.references?;
+    for reference in references {
+        if reference.browse_name.name.as_ref() != "EngineeringUnits" {
+            continue;
+        }
+        let property_id = reference.node_id.node_id.clone();
+        let values = session
+            .read(
+                &[read_value_id(property_id)],
+                TimestampsToReturn::Neither,
+                0.0,
+            )
+            .await
+            .ok()?;
+        return engineering_units_from_data_value(values.first()?);
+    }
+    None
+}
+
 #[async_trait::async_trait]
 impl RepublishProtocol for OpcuaRepublishProtocol {
     fn capabilities(&self) -> &Capabilities {
@@ -152,24 +287,60 @@ impl RepublishProtocol for OpcuaRepublishProtocol {
     }
 
     async fn discover(&self, conn: &Addressing) -> Result<DiscoverOutcome> {
-        let url = conn_str(conn, "endpoint_url").unwrap_or_default();
-        let connection = connect(conn).await?;
-        connection.close().await;
-        Ok(DiscoverOutcome {
-            devices: vec![DiscoveredDevice {
-                key: "opcua-server".into(),
+        let url =
+            conn_str(conn, "endpoint_url").ok_or_else(|| anyhow!("OPC UA endpoint_url is required"))?;
+        let client = discovery_client()?;
+        let mut warnings = Vec::new();
+        let mut devices: Vec<DiscoveredDevice> = Vec::new();
+
+        match client.get_server_endpoints_from_url(url.as_str()).await {
+            Ok(endpoints) if !endpoints.is_empty() => {
+                for endpoint in endpoints {
+                    let address = endpoint.endpoint_url.to_string();
+                    if address.trim().is_empty() {
+                        continue;
+                    }
+                    if devices.iter().any(|device| device.address == address) {
+                        continue;
+                    }
+                    let server_name = endpoint.server.application_name.text.to_string();
+                    devices.push(DiscoveredDevice {
+                        key: endpoint_device_key(&server_name, &address),
+                        address,
+                        detail: endpoint_detail(&endpoint),
+                    });
+                }
+            }
+            Ok(_) => {
+                warnings.push(
+                    "GetEndpoints returned no endpoints; falling back to connect-check".into(),
+                );
+            }
+            Err(error) => {
+                warnings.push(format!(
+                    "GetEndpoints failed ({error}); falling back to connect-check"
+                ));
+            }
+        }
+
+        if devices.is_empty() {
+            let connection = connect(conn).await?;
+            connection.close().await;
+            devices.push(DiscoveredDevice {
+                key: endpoint_device_key("opcua-server", &url),
                 address: url,
-                detail: "OPC UA server".into(),
-            }],
-            warnings: vec![],
-        })
+                detail: "OPC UA server (connect-check only)".into(),
+            });
+        }
+
+        Ok(DiscoverOutcome { devices, warnings })
     }
 
     async fn browse(
         &self,
         conn: &Addressing,
         device: &DiscoveredDevice,
-    ) -> Result<Vec<DiscoveredPoint>> {
+    ) -> Result<BrowseOutcome> {
         let connection = connect(conn).await?;
         let result = browse_variables(&connection.session, device).await;
         connection.close().await;
@@ -247,10 +418,12 @@ const MAX_BROWSE_NODES: usize = 20_000;
 async fn browse_variables(
     session: &Arc<Session>,
     device: &DiscoveredDevice,
-) -> Result<Vec<DiscoveredPoint>> {
+) -> Result<BrowseOutcome> {
     let mut points: Vec<DiscoveredPoint> = Vec::new();
+    let mut warnings = Vec::new();
     let mut visited: HashSet<NodeId> = HashSet::new();
     let mut frontier: VecDeque<(NodeId, Vec<String>, usize)> = VecDeque::new();
+    let mut truncated = false;
 
     let root: NodeId = ObjectId::ObjectsFolder.into();
     visited.insert(root.clone());
@@ -258,6 +431,7 @@ async fn browse_variables(
 
     while let Some((node_id, path, depth)) = frontier.pop_front() {
         if visited.len() > MAX_BROWSE_NODES {
+            truncated = true;
             break;
         }
         for reference in browse_children(session, &node_id).await? {
@@ -299,25 +473,49 @@ async fn browse_variables(
         }
     }
 
-    // Read all discovered values in one request for a useful browse-time preview.
-    let to_read: Vec<ReadValueId> = points
-        .iter()
-        .filter_map(|p| conn_str(&p.addressing, "node_id"))
-        .filter_map(|s| s.parse::<NodeId>().ok())
-        .map(read_value_id)
-        .collect();
-    if to_read.len() == points.len() {
+    // Batch-read Value and Description for browse-time previews.
+    let mut preview_reads = Vec::new();
+    let mut node_ids = Vec::new();
+    for point in &points {
+        let Some(node_id) = conn_str(&point.addressing, "node_id")
+            .and_then(|s| s.parse::<NodeId>().ok())
+        else {
+            continue;
+        };
+        preview_reads.push(read_value_id(node_id.clone()));
+        preview_reads.push(read_description_id(node_id.clone()));
+        node_ids.push(node_id);
+    }
+    if preview_reads.len() == node_ids.len() * 2 && !node_ids.is_empty() {
         if let Ok(values) = session
-            .read(&to_read, TimestampsToReturn::Neither, 0.0)
+            .read(&preview_reads, TimestampsToReturn::Neither, 0.0)
             .await
         {
-            for (point, dv) in points.iter_mut().zip(values.iter()) {
-                point.value = data_value(dv);
+            for (point, chunk) in points.iter_mut().zip(values.chunks(2)) {
+                if let Some(value_dv) = chunk.first() {
+                    point.value = data_value(value_dv);
+                }
+                if let Some(desc_dv) = chunk.get(1) {
+                    point.description = desc_dv
+                        .value
+                        .as_ref()
+                        .and_then(localized_text_from_variant);
+                }
             }
         }
     }
 
-    Ok(points)
+    for (point, node_id) in points.iter_mut().zip(node_ids) {
+        point.units = engineering_units_for_variable(session, &node_id).await;
+    }
+
+    if truncated {
+        warnings.push(format!(
+            "Address-space browse capped at {MAX_BROWSE_NODES} visited nodes."
+        ));
+    }
+
+    Ok(BrowseOutcome { points, warnings })
 }
 
 /// Browse the forward hierarchical references of one node, following any
@@ -403,5 +601,41 @@ mod tests {
             }
             other => panic!("expected username token, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rejects_unsupported_security_policy() {
+        let mut conn = Addressing::new();
+        conn.insert("security_policy".into(), serde_json::json!("aes256"));
+        assert!(security_policy_url(&conn).is_err());
+    }
+
+    #[test]
+    fn variant_to_value_covers_numeric_and_text() {
+        assert_eq!(
+            variant_to_value(&Variant::Double(12.5)),
+            Some(TelemetryValue::Number(12.5))
+        );
+        assert_eq!(
+            variant_to_value(&Variant::String("open".into())),
+            Some(TelemetryValue::Text("open".into()))
+        );
+        assert_eq!(variant_to_value(&Variant::Empty), None);
+    }
+
+    #[test]
+    fn engineering_units_from_eu_information_extension_object() {
+        use opcua::types::{ExtensionObject, LocalizedText, UAString};
+        let eu = EUInformation {
+            namespace_uri: UAString::from("urn:test"),
+            unit_id: 1,
+            display_name: LocalizedText::new("", "degC"),
+            description: LocalizedText::null(),
+        };
+        let dv = DataValue::new_now(Variant::from(ExtensionObject::from_message(eu)));
+        assert_eq!(
+            engineering_units_from_data_value(&dv).as_deref(),
+            Some("degC")
+        );
     }
 }

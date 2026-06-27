@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/proto-api", "crates/sim-core", "crates/proto-bacnet", "crates/proto-modbus", "crates/proto-opcua", "crates/republish-core"]
+exclude = ["crates/proto-bacnet/fuzz"]
 
 # Patched bacnet-transport: keeps broadcast destination port at 47808 when the
 # local bind port is ephemeral (port = 0), which upstream breaks. Used by the
@@ -14,6 +15,7 @@ bacnet-transport = { path = "crates/proto-bacnet/vendor/bacnet-transport" }
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
+rust-version = "1.93"
 repository = "https://github.com/NETIX-AI-OSS/netix-protocol-core"
 
 [workspace.dependencies]

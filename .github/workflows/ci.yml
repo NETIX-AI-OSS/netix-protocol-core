@@ -13,26 +13,159 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Install Linux build dependencies (iced GUI)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
+            libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
+            libegl1-mesa-dev
 
       - name: Format
         run: cargo fmt --all -- --check
 
-      # Clippy is informational: the vendored bacnet-transport opts into
-      # `#![warn(missing_docs)]`, so we don't fail the build on warnings here.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test cores
         run: cargo test --locked -p proto-api -p sim-core -p republish-core
 
-      - name: Test protocol adapters
+  feature-matrix:
+    name: Adapter feature permutations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { package: proto-bacnet, features: "" }
+          - { package: proto-bacnet, features: "sim" }
+          - { package: proto-bacnet, features: "republish" }
+          - { package: proto-bacnet, features: "sim,republish" }
+          - { package: proto-modbus, features: "" }
+          - { package: proto-modbus, features: "sim" }
+          - { package: proto-modbus, features: "republish" }
+          - { package: proto-modbus, features: "sim,republish" }
+          - { package: proto-opcua, features: "" }
+          - { package: proto-opcua, features: "sim" }
+          - { package: proto-opcua, features: "republish" }
+          - { package: proto-opcua, features: "sim,republish" }
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Install Linux build dependencies (iced GUI)
         run: |
-          cargo test --locked -p proto-bacnet --features sim,republish
-          cargo test --locked -p proto-modbus --features sim,republish
-          cargo test --locked -p proto-opcua --features sim,republish
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
+            libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
+            libegl1-mesa-dev
+      - name: Test
+        run: |
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo test --locked -p ${{ matrix.package }} --features "${{ matrix.features }}"
+          else
+            cargo test --locked -p ${{ matrix.package }}
+          fi
+
+  all-features:
+    name: Workspace all-features
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Install Linux build dependencies (iced GUI)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
+            libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
+            libegl1-mesa-dev
+      - name: Test all features
+        run: cargo test --locked --workspace --all-features
+
+  loopback-smoke:
+    name: Cross-protocol republish loopbacks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Install Linux build dependencies (iced GUI)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
+            libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
+            libegl1-mesa-dev
+      - name: Run sim↔republish loopback tests
+        run: |
+          cargo test --locked -p proto-bacnet --features sim,republish --test republish_loopback
+          cargo test --locked -p proto-modbus --features sim,republish --test republish_loopback
+          cargo test --locked -p proto-opcua --features sim,republish --test republish_loopback
+          cargo test --locked -p proto-opcua --features sim,republish --test secured_loopback
+
+  cargo-deny:
+    name: License and advisory gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Check licenses and advisories
+        run: cargo deny check
+
+  fuzz-compile:
+    name: Fuzz target compile check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Compile BACnet decoder fuzz target
+        run: cargo build --manifest-path crates/proto-bacnet/fuzz/Cargo.toml --bin decode_scalar_value
+
+  coverage:
+    name: LLVM coverage (informational)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Install Linux build dependencies (iced GUI)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
+            libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
+            libegl1-mesa-dev
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: Generate coverage report
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-failures
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lcov-report
+          path: lcov.info
+          if-no-files-found: error

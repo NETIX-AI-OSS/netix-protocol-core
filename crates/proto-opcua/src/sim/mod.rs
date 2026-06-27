@@ -6,11 +6,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use opcua::server::address_space::Variable;
+use opcua::server::address_space::ReferenceDirection;
+use opcua::server::address_space::VariableBuilder;
 use opcua::server::diagnostics::NamespaceMetadata;
 use opcua::server::node_manager::memory::{simple_node_manager, SimpleNodeManager};
-use opcua::server::ServerBuilder;
-use opcua::types::{DataValue, NodeId, ObjectId, QualifiedName, StatusCode, UAString, Variant};
+use opcua::server::{ANONYMOUS_USER_TOKEN_ID, ServerBuilder};
+use opcua::types::{
+    DataTypeId, DataValue, EUInformation, ExtensionObject, LocalizedText, MessageSecurityMode,
+    NodeId, ObjectId, QualifiedName, ReferenceTypeId, StatusCode, UAString, Variant,
+};
+use opcua::crypto::SecurityPolicy;
 use proto_api::{Addressing, Capabilities, PointValue};
 use sim_core::{SimProtocol, SimServeContext};
 
@@ -86,20 +91,42 @@ impl SimProtocol for OpcuaSimProtocol {
             .unwrap_or("0.0.0.0")
             .to_string();
 
-        let (server, handle) = ServerBuilder::new_anonymous("NETIX Simulator")
-            .application_uri(APPLICATION_URI)
-            .product_uri(APPLICATION_URI)
-            .host(host)
-            .port(ctx.port)
-            .with_node_manager(simple_node_manager(
-                NamespaceMetadata {
-                    namespace_uri: ns_uri.clone(),
-                    ..Default::default()
-                },
-                "simulator",
-            ))
-            .build()
-            .map_err(|e| anyhow::anyhow!("OPC UA server build failed: {e}"))?;
+        let secured = ctx
+            .options
+            .get("secured")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let (server, handle) = {
+            let mut builder = ServerBuilder::new_anonymous("NETIX Simulator")
+                .application_uri(APPLICATION_URI)
+                .product_uri(APPLICATION_URI)
+                .host(host.clone())
+                .port(ctx.port)
+                .with_node_manager(simple_node_manager(
+                    NamespaceMetadata {
+                        namespace_uri: ns_uri.clone(),
+                        ..Default::default()
+                    },
+                    "simulator",
+                ));
+            if secured {
+                builder = builder
+                    .create_sample_keypair(true)
+                    .add_endpoint(
+                        "basic256sha256_sign_encrypt",
+                        (
+                            "/",
+                            SecurityPolicy::Basic256Sha256,
+                            MessageSecurityMode::SignAndEncrypt,
+                            &[ANONYMOUS_USER_TOKEN_ID] as &[&str],
+                        ),
+                    );
+            }
+            builder
+                .build()
+                .map_err(|e| anyhow::anyhow!("OPC UA server build failed: {e}"))?
+        };
 
         let node_manager = handle
             .node_managers()
@@ -130,7 +157,6 @@ impl SimProtocol for OpcuaSimProtocol {
                     &objects_folder,
                 );
 
-                let mut variables = Vec::with_capacity(device.points.len());
                 for point in &device.points {
                     let node_id = NodeId::new(
                         ns,
@@ -140,26 +166,67 @@ impl SimProtocol for OpcuaSimProtocol {
                         ),
                     );
                     let display = point.label.replace('_', " ");
+                    let description = format!("Simulated {display}");
                     let variant = neutral_to_variant(point.neutral_value());
-                    variables.push(Variable::new(
-                        &node_id,
-                        QualifiedName::new(ns, point.label.as_str()),
-                        display.as_str(),
-                        variant.clone(),
-                    ));
+                    let var = VariableBuilder::new(&node_id, point.label.as_str(), display.as_str())
+                        .description(description)
+                        .data_type(DataTypeId::Double)
+                        .value(variant.clone())
+                        .build();
+                    space.insert(
+                        var,
+                        Some(&[(
+                            &folder_id,
+                            &ReferenceTypeId::Organizes,
+                            ReferenceDirection::Inverse,
+                        )]),
+                    );
                     cache
                         .write()
                         .unwrap()
                         .insert(node_id.clone(), DataValue::new_now(variant));
                     points.push(PointRef {
-                        node_id,
+                        node_id: node_id.clone(),
                         device_id: device.device_id,
                         object_type: point.object_type.clone(),
                         instance: point.instance,
                     });
+
+                    if let Some(units) = point.units.as_deref() {
+                        let eu_node = NodeId::new(
+                            ns,
+                            format!(
+                                "{}.{}.{}.EngineeringUnits",
+                                device.device_id, point.object_type, point.instance
+                            ),
+                        );
+                        let eu = EUInformation {
+                            namespace_uri: UAString::from(
+                                "http://www.opcfoundation.org/UA/units/un/celeg",
+                            ),
+                            unit_id: 4408652,
+                            display_name: LocalizedText::new("", units),
+                            description: LocalizedText::new("", units),
+                        };
+                        let eu_var = VariableBuilder::new(
+                            &eu_node,
+                            "EngineeringUnits",
+                            "EngineeringUnits",
+                        )
+                        .data_type(DataTypeId::EUInformation)
+                        .value(Variant::from(ExtensionObject::from_message(eu)))
+                        .build();
+                        space.insert(
+                            eu_var,
+                            Some(&[(
+                                &node_id,
+                                &ReferenceTypeId::HasProperty,
+                                ReferenceDirection::Inverse,
+                            )]),
+                        );
+                    }
                     count += 1;
                 }
-                space.add_variables(variables, &folder_id);
             }
         }
 

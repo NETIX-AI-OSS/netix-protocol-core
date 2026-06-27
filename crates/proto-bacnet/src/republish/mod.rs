@@ -2,7 +2,7 @@
 //! ReadProperty(Multiple) polling, mapped onto the generic republisher trait.
 
 mod refresh;
-mod value;
+pub mod value;
 
 #[cfg(feature = "republish")]
 pub mod test_support;
@@ -21,8 +21,8 @@ use bacnet_types::primitives::ObjectIdentifier;
 use futures_util::stream::{self, StreamExt};
 use proto_api::{Addressing, Capabilities};
 use republish_core::model::{
-    json_scalar, now_millis, DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig,
-    PointFailure, PointSample, PollOutcome, RefreshOutcome,
+    json_scalar, now_millis, BrowseOutcome, DiscoverOutcome, DiscoveredDevice, DiscoveredPoint,
+    PointConfig, PointFailure, PointSample, PollOutcome, RefreshOutcome,
 };
 use republish_core::network::{ipv4_interfaces, NetworkInterface};
 use republish_core::RepublishProtocol;
@@ -323,7 +323,7 @@ impl RepublishProtocol for BacnetRepublishProtocol {
         &self,
         conn: &Addressing,
         device: &DiscoveredDevice,
-    ) -> Result<Vec<DiscoveredPoint>> {
+    ) -> Result<BrowseOutcome> {
         let device_instance = instance_from_key(&device.key)
             .ok_or_else(|| anyhow!("cannot determine device instance from '{}'", device.key))?;
         let interfaces = ipv4_interfaces();
@@ -365,7 +365,7 @@ async fn scan_objects(
     client: &BacnetIpClient,
     device_instance: u32,
     dev_key: &str,
-) -> Result<Vec<DiscoveredPoint>> {
+) -> Result<BrowseOutcome> {
     let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, device_instance)?;
     let count_ack = client
         .read_property_from_device(
@@ -379,7 +379,18 @@ async fn scan_objects(
     let count =
         decode_unsigned(&count_ack.property_value).context("decode objectList length")? as usize;
 
-    let mut points = Vec::new();
+    let mut warnings = Vec::new();
+    if let Some(warning) = object_list_truncation_warning(count) {
+        warnings.push(warning);
+    }
+
+    struct ObjectEntry {
+        object_identifier: ObjectIdentifier,
+        object_type: ObjectType,
+        object_instance: u32,
+    }
+
+    let mut entries = Vec::new();
     for index in 1..=count.min(MAX_BROWSE_OBJECTS) {
         let Ok(ack) = client
             .read_property_from_device(
@@ -399,61 +410,176 @@ async fn scan_objects(
             continue;
         }
         let object_identifier = ObjectIdentifier::new(object_type, object_instance)?;
-        let name = read_scalar(
-            client,
-            device_instance,
+        entries.push(ObjectEntry {
             object_identifier,
-            PropertyIdentifier::OBJECT_NAME,
-        )
-        .await
-        .map(|v| v.to_string())
-        .filter(|v| !v.trim().is_empty());
-        let description = read_scalar(
-            client,
-            device_instance,
-            object_identifier,
-            PropertyIdentifier::DESCRIPTION,
-        )
-        .await
-        .map(|v| v.to_string())
-        .filter(|v| !v.trim().is_empty());
-        let units = read_scalar(
-            client,
-            device_instance,
-            object_identifier,
-            PropertyIdentifier::UNITS,
-        )
-        .await
-        .map(|v| v.to_string())
-        .filter(|v| !v.trim().is_empty());
-        let present = read_scalar(
-            client,
-            device_instance,
-            object_identifier,
-            PropertyIdentifier::PRESENT_VALUE,
-        )
-        .await;
-
-        let type_name = object_type_name(object_type);
-        let mut addressing = Addressing::new();
-        addressing.insert("device_instance".into(), serde_json::json!(device_instance));
-        addressing.insert("object_type".into(), serde_json::json!(type_name.clone()));
-        addressing.insert("object_instance".into(), serde_json::json!(object_instance));
-        addressing.insert("property".into(), serde_json::json!("present_value"));
-        let point_name = name
-            .clone()
-            .unwrap_or_else(|| format!("{type_name}_{object_instance}"));
-        points.push(DiscoveredPoint {
-            device_key: dev_key.to_string(),
-            name,
-            description,
-            units,
-            value: present,
-            addressing,
-            suggested_tag_path: format!("{dev_key}/{point_name}"),
+            object_type,
+            object_instance,
         });
     }
-    Ok(points)
+
+    let metadata_props = [
+        PropertyIdentifier::OBJECT_NAME,
+        PropertyIdentifier::DESCRIPTION,
+        PropertyIdentifier::UNITS,
+        PropertyIdentifier::PRESENT_VALUE,
+    ];
+
+    const RPM_OBJECT_CHUNK: usize = 32;
+    let mut points = Vec::with_capacity(entries.len());
+
+    for chunk in entries.chunks(RPM_OBJECT_CHUNK) {
+        let specs = chunk
+            .iter()
+            .map(|entry| ReadAccessSpecification {
+                object_identifier: entry.object_identifier,
+                list_of_property_references: metadata_props
+                    .iter()
+                    .map(|property_identifier| PropertyReference {
+                        property_identifier: *property_identifier,
+                        property_array_index: None,
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+
+        match client
+            .read_property_multiple_from_device(device_instance, specs)
+            .await
+        {
+            Ok(ack) => {
+                let mut by_object = HashMap::<ObjectIdentifier, HashMap<PropertyIdentifier, Vec<u8>>>::new();
+                for result in ack.list_of_read_access_results {
+                    let slot = by_object.entry(result.object_identifier).or_default();
+                    for element in result.list_of_results {
+                        if let Some(value_bytes) = element.property_value {
+                            slot.insert(element.property_identifier, value_bytes);
+                        }
+                    }
+                }
+                for entry in chunk {
+                    let props = by_object.get(&entry.object_identifier);
+                    let name = props
+                        .and_then(|p| p.get(&PropertyIdentifier::OBJECT_NAME))
+                        .and_then(|v| decode_scalar_value(v).ok())
+                        .map(|v| v.to_string())
+                        .filter(|v| !v.trim().is_empty());
+                    let description = props
+                        .and_then(|p| p.get(&PropertyIdentifier::DESCRIPTION))
+                        .and_then(|v| decode_scalar_value(v).ok())
+                        .map(|v| v.to_string())
+                        .filter(|v| !v.trim().is_empty());
+                    let units = props
+                        .and_then(|p| p.get(&PropertyIdentifier::UNITS))
+                        .and_then(|v| decode_scalar_value(v).ok())
+                        .map(|v| v.to_string())
+                        .filter(|v| !v.trim().is_empty());
+                    let present = props
+                        .and_then(|p| p.get(&PropertyIdentifier::PRESENT_VALUE))
+                        .and_then(|v| decode_scalar_value(v).ok());
+                    points.push(discovered_point_from_object(
+                        dev_key,
+                        device_instance,
+                        entry.object_type,
+                        entry.object_instance,
+                        name,
+                        description,
+                        units,
+                        present,
+                    ));
+                }
+            }
+            Err(error) => {
+                warnings.push(format!(
+                    "RPM failed for device {device_instance} browse chunk; used fallback: {error:#}"
+                ));
+                for entry in chunk {
+                    let object_identifier = entry.object_identifier;
+                    let name = read_scalar(
+                        client,
+                        device_instance,
+                        object_identifier,
+                        PropertyIdentifier::OBJECT_NAME,
+                    )
+                    .await
+                    .map(|v| v.to_string())
+                    .filter(|v| !v.trim().is_empty());
+                    let description = read_scalar(
+                        client,
+                        device_instance,
+                        object_identifier,
+                        PropertyIdentifier::DESCRIPTION,
+                    )
+                    .await
+                    .map(|v| v.to_string())
+                    .filter(|v| !v.trim().is_empty());
+                    let units = read_scalar(
+                        client,
+                        device_instance,
+                        object_identifier,
+                        PropertyIdentifier::UNITS,
+                    )
+                    .await
+                    .map(|v| v.to_string())
+                    .filter(|v| !v.trim().is_empty());
+                    let present = read_scalar(
+                        client,
+                        device_instance,
+                        object_identifier,
+                        PropertyIdentifier::PRESENT_VALUE,
+                    )
+                    .await;
+                    points.push(discovered_point_from_object(
+                        dev_key,
+                        device_instance,
+                        entry.object_type,
+                        entry.object_instance,
+                        name,
+                        description,
+                        units,
+                        present,
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(BrowseOutcome { points, warnings })
+}
+
+fn object_list_truncation_warning(count: usize) -> Option<String> {
+    (count > MAX_BROWSE_OBJECTS).then(|| {
+        format!("Object list has {count} objects; browse capped at {MAX_BROWSE_OBJECTS}.")
+    })
+}
+
+fn discovered_point_from_object(
+    dev_key: &str,
+    device_instance: u32,
+    object_type: ObjectType,
+    object_instance: u32,
+    name: Option<String>,
+    description: Option<String>,
+    units: Option<String>,
+    present: Option<republish_core::TelemetryValue>,
+) -> DiscoveredPoint {
+    let type_name = object_type_name(object_type);
+    let mut addressing = Addressing::new();
+    addressing.insert("device_instance".into(), serde_json::json!(device_instance));
+    addressing.insert("object_type".into(), serde_json::json!(type_name.clone()));
+    addressing.insert("object_instance".into(), serde_json::json!(object_instance));
+    addressing.insert("property".into(), serde_json::json!("present_value"));
+    let point_name = name
+        .clone()
+        .unwrap_or_else(|| format!("{type_name}_{object_instance}"));
+    DiscoveredPoint {
+        device_key: dev_key.to_string(),
+        name,
+        description,
+        units,
+        value: present,
+        addressing,
+        suggested_tag_path: format!("{dev_key}/{point_name}"),
+    }
 }
 
 pub(crate) async fn read_scalar(
@@ -656,4 +782,21 @@ async fn read_group_individual(
         }
     }
     (samples, failures)
+}
+
+#[cfg(test)]
+mod browse_tests {
+    use super::*;
+
+    #[test]
+    fn object_list_truncation_warning_when_over_cap() {
+        let warning = object_list_truncation_warning(MAX_BROWSE_OBJECTS + 1).unwrap();
+        assert!(warning.contains("513"));
+        assert!(warning.contains("512"));
+    }
+
+    #[test]
+    fn object_list_truncation_warning_absent_under_cap() {
+        assert!(object_list_truncation_warning(MAX_BROWSE_OBJECTS).is_none());
+    }
 }

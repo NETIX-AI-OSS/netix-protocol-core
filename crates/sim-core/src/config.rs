@@ -441,7 +441,7 @@ mod tests {
             devs.len()
         );
         assert!(
-            total_points >= 1400 && total_points <= 1600,
+            (1400..=1600).contains(&total_points),
             "point count out of expected band: {}",
             total_points
         );

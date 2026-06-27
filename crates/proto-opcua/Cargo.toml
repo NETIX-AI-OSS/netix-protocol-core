@@ -28,4 +28,14 @@ serde_json = { workspace = true, optional = true }
 async-opcua = { version = "0.18", optional = true, default-features = false }
 
 [dev-dependencies]
+sim-core = { workspace = true }
+serde_json = { workspace = true }
 tokio-util = { workspace = true }
+
+[[test]]
+name = "republish_loopback"
+required-features = ["sim", "republish"]
+
+[[test]]
+name = "secured_loopback"
+required-features = ["sim", "republish"]

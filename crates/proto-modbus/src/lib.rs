@@ -34,6 +34,8 @@ pub fn capabilities() -> Capabilities {
             FieldSpec::u32("timeout_ms", "Timeout (ms)", 1000),
             FieldSpec::u32("scan_concurrency", "Scan concurrency", 32),
             FieldSpec::u32("max_hosts", "Max hosts per scan", 256),
+            FieldSpec::u32("browse_start", "Browse start address", 0),
+            FieldSpec::u32("browse_count", "Browse count", 32),
         ],
         addressing_fields: vec![
             FieldSpec::enumeration("table", "Register table", TABLES, "holding"),

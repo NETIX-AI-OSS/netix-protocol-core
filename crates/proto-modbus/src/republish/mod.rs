@@ -10,8 +10,8 @@ use anyhow::{anyhow, Context as _, Result};
 use futures_util::stream::{self, StreamExt};
 use proto_api::{Addressing, Capabilities};
 use republish_core::model::{
-    now_millis, DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig, PointFailure,
-    PointSample, PollOutcome, TelemetryValue,
+    now_millis, BrowseOutcome, DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig,
+    PointFailure, PointSample, PollOutcome, TelemetryValue,
 };
 use republish_core::RepublishProtocol;
 use tokio::time::timeout;
@@ -19,8 +19,11 @@ use tokio_modbus::client::Context;
 use tokio_modbus::prelude::Reader;
 use tokio_modbus::Slave;
 
-/// How many registers `browse` scans from each table.
-const BROWSE_COUNT: u16 = 32;
+/// Default register range when connection fields are unset.
+const DEFAULT_BROWSE_START: u16 = 0;
+const DEFAULT_BROWSE_COUNT: u16 = 32;
+/// Stop scanning a table after this many consecutive unreadable addresses.
+const MAX_CONSECUTIVE_GAPS: u16 = 8;
 
 pub struct ModbusRepublishProtocol {
     caps: Capabilities,
@@ -39,6 +42,8 @@ struct ConnParams {
     timeout: Duration,
     scan_concurrency: usize,
     max_hosts: u32,
+    browse_start: u16,
+    browse_count: u16,
 }
 
 impl Clone for ConnParams {
@@ -50,6 +55,8 @@ impl Clone for ConnParams {
             timeout: self.timeout,
             scan_concurrency: self.scan_concurrency,
             max_hosts: self.max_hosts,
+            browse_start: self.browse_start,
+            browse_count: self.browse_count,
         }
     }
 }
@@ -79,7 +86,15 @@ fn parse_conn(conn: &Addressing) -> Result<ConnParams> {
         unit,
         timeout: Duration::from_millis(timeout_ms.max(100)),
         scan_concurrency: conn_u64(conn, "scan_concurrency").unwrap_or(32).max(1) as usize,
-        max_hosts: conn_u64(conn, "max_hosts").unwrap_or(256).max(1) as u32,
+        max_hosts: conn_u64(conn, "max_hosts")
+            .unwrap_or(scan::DEFAULT_MAX_HOSTS as u64)
+            .max(1) as u32,
+        browse_start: conn_u64(conn, "browse_start")
+            .unwrap_or(DEFAULT_BROWSE_START as u64)
+            .min(u16::MAX as u64) as u16,
+        browse_count: conn_u64(conn, "browse_count")
+            .unwrap_or(DEFAULT_BROWSE_COUNT as u64)
+            .clamp(1, u16::MAX as u64) as u16,
     })
 }
 
@@ -122,17 +137,33 @@ async fn connect(params: &ConnParams) -> Result<Context> {
     .await
 }
 
+async fn probe_modbus(ctx: &mut Context) -> Option<&'static str> {
+    if ctx.read_holding_registers(0, 1).await.ok()?.is_ok() {
+        return Some("holding");
+    }
+    if ctx.read_input_registers(0, 1).await.ok()?.is_ok() {
+        return Some("input");
+    }
+    if ctx.read_coils(0, 1).await.ok()?.is_ok() {
+        return Some("coil");
+    }
+    if ctx.read_discrete_inputs(0, 1).await.ok()?.is_ok() {
+        return Some("discrete");
+    }
+    None
+}
+
 async fn probe_host(ip: Ipv4Addr, params: &ConnParams) -> Option<DiscoveredDevice> {
     let addr = SocketAddr::from((ip, params.port));
     let host_label = endpoint_label(&ip.to_string(), params.port);
     let mut ctx = connect_addr(addr, params.unit, params.timeout, &host_label)
         .await
         .ok()?;
-    ctx.read_holding_registers(0, 1).await.ok()?.ok()?;
+    let table = probe_modbus(&mut ctx).await?;
     Some(DiscoveredDevice {
         key: format!("modbus-{}", host_label.replace([':', '.'], "-")),
         address: host_label,
-        detail: format!("unit {}", params.unit),
+        detail: format!("unit {} ({table})", params.unit),
     })
 }
 
@@ -181,36 +212,46 @@ impl RepublishProtocol for ModbusRepublishProtocol {
         &self,
         conn: &Addressing,
         device: &DiscoveredDevice,
-    ) -> Result<Vec<DiscoveredPoint>> {
+    ) -> Result<BrowseOutcome> {
         let params = parse_conn(conn)?;
         let mut ctx = connect(&params).await?;
         let mut points = Vec::new();
 
-        // Scan holding and input registers one at a time (Modbus reads are
-        // all-or-nothing, so a fixed-width scan fails entirely past the device's
-        // last register). Stop at the first address that isn't readable.
+        let end = params.browse_start.saturating_add(params.browse_count);
         for table in ["holding", "input"] {
-            for addr in 0..BROWSE_COUNT {
+            let mut consecutive_gaps = 0u16;
+            for addr in params.browse_start..end {
                 let read = match table {
                     "holding" => ctx.read_holding_registers(addr, 1).await,
                     _ => ctx.read_input_registers(addr, 1).await,
                 };
                 let Ok(Ok(regs)) = read else {
-                    break;
+                    consecutive_gaps += 1;
+                    if consecutive_gaps >= MAX_CONSECUTIVE_GAPS {
+                        break;
+                    }
+                    continue;
                 };
+                consecutive_gaps = 0;
                 let value = TelemetryValue::Number(regs.first().copied().unwrap_or(0) as f64);
                 push_register_point(&mut points, device, table, addr, "u16", value);
             }
         }
         for table in ["coil", "discrete"] {
-            for addr in 0..BROWSE_COUNT {
+            let mut consecutive_gaps = 0u16;
+            for addr in params.browse_start..end {
                 let read = match table {
                     "coil" => ctx.read_coils(addr, 1).await,
                     _ => ctx.read_discrete_inputs(addr, 1).await,
                 };
                 let Ok(Ok(bits)) = read else {
-                    break;
+                    consecutive_gaps += 1;
+                    if consecutive_gaps >= MAX_CONSECUTIVE_GAPS {
+                        break;
+                    }
+                    continue;
                 };
+                consecutive_gaps = 0;
                 let value = TelemetryValue::Number(if bits.first().copied().unwrap_or(false) {
                     1.0
                 } else {
@@ -219,7 +260,10 @@ impl RepublishProtocol for ModbusRepublishProtocol {
                 push_register_point(&mut points, device, table, addr, "bool", value);
             }
         }
-        Ok(points)
+        Ok(BrowseOutcome {
+            points,
+            warnings: vec![],
+        })
     }
 
     async fn poll(&self, conn: &Addressing, points: &[PointConfig]) -> Result<PollOutcome> {
@@ -373,5 +417,15 @@ mod tests {
     fn decode_signed_16() {
         assert_eq!(decode(&[0xFFFF], "i16", "big").unwrap(), -1.0);
         assert_eq!(decode(&[0x0005], "u16", "big").unwrap(), 5.0);
+    }
+
+    #[test]
+    fn decode_u32_and_i32_word_orders() {
+        let bits: u32 = 1_000_003;
+        let hi = (bits >> 16) as u16;
+        let lo = (bits & 0xFFFF) as u16;
+        assert_eq!(decode(&[hi, lo], "u32", "big").unwrap(), 1_000_003.0);
+        assert_eq!(decode(&[lo, hi], "u32", "little").unwrap(), 1_000_003.0);
+        assert_eq!(decode(&[0xFFFF, 0xFFFF], "i32", "big").unwrap(), -1.0);
     }
 }

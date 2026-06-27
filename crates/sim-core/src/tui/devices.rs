@@ -70,7 +70,7 @@ pub fn draw(
         .collect();
 
     let title = if state.filter_mode {
-        format!(" Devices (filter) ")
+        " Devices (filter) ".to_string()
     } else if state.filter.is_empty() {
         " Devices ".to_string()
     } else {

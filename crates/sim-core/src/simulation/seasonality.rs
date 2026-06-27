@@ -121,7 +121,7 @@ mod tests {
             let t = Local.with_ymd_and_hms(2023, 10, 18, hour, 0, 0).unwrap();
             let temp = engine.get_outside_temp(t);
             assert!(
-                temp >= 25.0 && temp <= 35.0,
+                (25.0..=35.0).contains(&temp),
                 "hour={hour}: temp {temp} out of [25, 35]"
             );
         }

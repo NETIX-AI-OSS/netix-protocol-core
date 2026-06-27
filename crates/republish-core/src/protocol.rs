@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use proto_api::{Addressing, Capabilities};
 
 use crate::model::{
-    DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig, PollOutcome, RefreshOutcome,
+    BrowseOutcome, DiscoverOutcome, DiscoveredDevice, PointConfig, PollOutcome, RefreshOutcome,
 };
 
 #[async_trait::async_trait]
@@ -28,7 +28,7 @@ pub trait RepublishProtocol: Send + Sync {
         &self,
         conn: &Addressing,
         device: &DiscoveredDevice,
-    ) -> anyhow::Result<Vec<DiscoveredPoint>>;
+    ) -> anyhow::Result<BrowseOutcome>;
 
     /// Read current values for the configured points.
     async fn poll(&self, conn: &Addressing, points: &[PointConfig]) -> anyhow::Result<PollOutcome>;

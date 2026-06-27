@@ -46,6 +46,39 @@ fn device_instance(point: &PointConfig) -> Option<u32> {
     }
 }
 
+/// Points eligible for polling this cycle: enabled, resolved, not in backoff,
+/// and past their poll interval.
+fn due_points(
+    now: Instant,
+    points: &[PointConfig],
+    unresolved_devices: &HashSet<u32>,
+    device_backoffs: &HashMap<u32, DeviceBackoff>,
+    last_poll: &HashMap<PointIdentity, Instant>,
+) -> Vec<PointConfig> {
+    points
+        .iter()
+        .filter(|p| p.enabled)
+        .filter(|p| {
+            if let Some(instance) = device_instance(p) {
+                if unresolved_devices.contains(&instance) {
+                    return false;
+                }
+                if let Some(backoff) = device_backoffs.get(&instance) {
+                    if now < backoff.until {
+                        return false;
+                    }
+                }
+            }
+            let id = PointIdentity::from_point(p);
+            match last_poll.get(&id) {
+                Some(at) => now.duration_since(*at).as_secs() >= p.poll_interval_secs,
+                None => true,
+            }
+        })
+        .cloned()
+        .collect()
+}
+
 fn device_backoff_max(conn: &Addressing) -> Duration {
     match conn.get("device_backoff_max_secs") {
         Some(serde_json::Value::Number(n)) => {
@@ -266,9 +299,12 @@ pub fn spawn_browse(
         run_async(sender.clone(), async move {
             let proto = factory();
             match proto.browse(&conn, &device).await {
-                Ok(points) => {
-                    let count = points.len();
-                    let _ = sender.send(WorkerEvent::Points(points));
+                Ok(outcome) => {
+                    for warning in outcome.warnings {
+                        log(&sender, LogLevel::Warning, warning);
+                    }
+                    let count = outcome.points.len();
+                    let _ = sender.send(WorkerEvent::Points(outcome.points));
                     let _ = sender.send(WorkerEvent::Finished(format!(
                         "Browsed {count} point(s) on {}",
                         device.key
@@ -314,9 +350,12 @@ pub fn spawn_scan_all_objects(
             let mut failures = 0usize;
             for (idx, device) in devices.iter().enumerate() {
                 match proto.browse(&conn, device).await {
-                    Ok(points) => {
-                        let count = points.len();
-                        for point in points {
+                    Ok(outcome) => {
+                        for warning in outcome.warnings {
+                            log(&sender, LogLevel::Warning, warning);
+                        }
+                        let count = outcome.points.len();
+                        for point in outcome.points {
                             imported.push(point_from_discovered(&point, 10));
                         }
                         log(
@@ -542,28 +581,13 @@ pub fn spawn_republisher(
                     }
                 }
 
-                let due: Vec<PointConfig> = points
-                    .iter()
-                    .filter(|p| p.enabled)
-                    .filter(|p| {
-                        if let Some(instance) = device_instance(p) {
-                            if unresolved_devices.contains(&instance) {
-                                return false;
-                            }
-                            if let Some(backoff) = device_backoffs.get(&instance) {
-                                if now < backoff.until {
-                                    return false;
-                                }
-                            }
-                        }
-                        let id = PointIdentity::from_point(p);
-                        match last_poll.get(&id) {
-                            Some(at) => now.duration_since(*at).as_secs() >= p.poll_interval_secs,
-                            None => true,
-                        }
-                    })
-                    .cloned()
-                    .collect();
+                let due = due_points(
+                    now,
+                    &points,
+                    &unresolved_devices,
+                    &device_backoffs,
+                    &last_poll,
+                );
 
                 if !due.is_empty() {
                     let polled_devices: HashSet<u32> =
@@ -664,4 +688,101 @@ pub fn spawn_republisher(
             )));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::unbounded;
+    use crate::model::{PointConfig, RefreshOutcome};
+
+    fn bacnet_point(device: u32, enabled: bool) -> PointConfig {
+        let mut addressing = Addressing::new();
+        addressing.insert("device_instance".into(), serde_json::json!(device));
+        PointConfig {
+            enabled,
+            device_key: format!("d{device}"),
+            addressing,
+            ..PointConfig::default()
+        }
+    }
+
+    #[test]
+    fn apply_refresh_state_clears_resolved_and_tracks_new_unresolved() {
+        let mut unresolved = HashSet::from([100u32, 200u32]);
+        let mut backoffs = HashMap::from([(
+            100u32,
+            DeviceBackoff {
+                delay: Duration::from_secs(10),
+                until: Instant::now(),
+            },
+        )]);
+        let refresh = RefreshOutcome {
+            resolved: vec![100],
+            unresolved: vec![300],
+        };
+
+        let change = apply_refresh_state(&mut unresolved, &mut backoffs, &refresh);
+
+        assert!(!unresolved.contains(&100));
+        assert!(unresolved.contains(&200));
+        assert!(unresolved.contains(&300));
+        assert_eq!(change.newly_resolved, vec![100]);
+        assert!(change.newly_unresolved.contains(&300));
+        assert!(!backoffs.contains_key(&100));
+    }
+
+    #[test]
+    fn record_unresolved_failures_emits_failures_and_updates_status() {
+        let (tx, rx) = unbounded();
+        let points = vec![bacnet_point(42, true), bacnet_point(99, true)];
+        let unresolved = HashSet::from([42u32]);
+        let mut status = HashMap::new();
+
+        record_unresolved_failures(&tx, &points, &unresolved, &mut status);
+
+        match rx.try_recv().unwrap() {
+            WorkerEvent::Failures(failures) => {
+                assert_eq!(failures.len(), 1);
+                assert!(failures[0].error.contains("not in I-Am cache"));
+            }
+            other => panic!("expected Failures, got {other:?}"),
+        }
+        let identity = PointIdentity::from_point(&points[0]);
+        assert_eq!(status.get(&identity).unwrap().consecutive_failures, 1);
+    }
+
+    #[test]
+    fn due_points_skips_backoff_until_window() {
+        let now = Instant::now();
+        let point = bacnet_point(100, true);
+        let mut backoffs = HashMap::from([(
+            100u32,
+            DeviceBackoff {
+                delay: Duration::from_secs(30),
+                until: now + Duration::from_secs(30),
+            },
+        )]);
+        let due = due_points(now, std::slice::from_ref(&point), &HashSet::new(), &backoffs, &HashMap::new());
+        assert!(due.is_empty());
+
+        backoffs.get_mut(&100).unwrap().until = now - Duration::from_secs(1);
+        let due = due_points(now, std::slice::from_ref(&point), &HashSet::new(), &backoffs, &HashMap::new());
+        assert_eq!(due.len(), 1);
+    }
+
+    #[test]
+    fn due_points_respects_poll_interval() {
+        let now = Instant::now();
+        let mut point = bacnet_point(100, true);
+        point.poll_interval_secs = 60;
+        let mut last_poll = HashMap::new();
+        last_poll.insert(PointIdentity::from_point(&point), now - Duration::from_secs(30));
+        let due = due_points(now, std::slice::from_ref(&point), &HashSet::new(), &HashMap::new(), &last_poll);
+        assert!(due.is_empty());
+
+        last_poll.insert(PointIdentity::from_point(&point), now - Duration::from_secs(60));
+        let due = due_points(now, std::slice::from_ref(&point), &HashSet::new(), &HashMap::new(), &last_poll);
+        assert_eq!(due.len(), 1);
+    }
 }

@@ -113,6 +113,12 @@ pub struct DiscoverOutcome {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BrowseOutcome {
+    pub points: Vec<DiscoveredPoint>,
+    pub warnings: Vec<String>,
+}
+
 /// A scalar telemetry value: numeric or text (booleans/enums become text).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TelemetryValue {
