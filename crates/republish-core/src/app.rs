@@ -209,6 +209,12 @@ impl RepublisherApp {
             logs,
         };
         app.reset_point_editor();
+        // Unattended deployments (e.g. an edge VM) set `autostart` so publishing
+        // begins on launch with no manual "Start" click. Invalid configs are
+        // reported by start_republisher and simply don't start.
+        if app.config.mqtt.autostart {
+            app.start_republisher();
+        }
         (app, Task::none())
     }
 
@@ -825,11 +831,10 @@ impl RepublisherApp {
                             .size(13)
                             .color(palette.text)
                             .width(Length::Fixed(160.0)),
-                        pick_list(
-                            choices,
-                            selected,
-                            |addr| Message::ConnFieldChanged("interface".into(), addr.to_string())
-                        ),
+                        pick_list(choices, selected, |addr| Message::ConnFieldChanged(
+                            "interface".into(),
+                            addr.to_string()
+                        )),
                         ui::action_button(
                             palette,
                             Icon::Refresh,
@@ -841,7 +846,10 @@ impl RepublisherApp {
                     .spacing(10)
                     .align_y(Alignment::Center),
                 );
-            } else if let Some(spec) = caps.connection_fields.iter().find(|field| field.key == "interface")
+            } else if let Some(spec) = caps
+                .connection_fields
+                .iter()
+                .find(|field| field.key == "interface")
             {
                 fields = fields.push(self.render_field(
                     palette,

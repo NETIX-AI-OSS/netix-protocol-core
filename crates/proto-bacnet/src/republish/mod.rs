@@ -67,7 +67,10 @@ impl ConnFingerprint {
             broadcast: cfg.broadcast,
             discovery_window_ms: cfg.discovery_window_ms,
             apdu_timeout_ms: cfg.apdu_timeout_ms,
-            bbmd: cfg.bbmd.as_ref().map(|b| (b.address, b.port, b.ttl_secs as u16)),
+            bbmd: cfg
+                .bbmd
+                .as_ref()
+                .map(|b| (b.address, b.port, b.ttl_secs as u16)),
         }
     }
 }
@@ -90,9 +93,7 @@ impl BacnetRepublishProtocol {
         let fingerprint = ConnFingerprint::from_cfg(cfg);
         let needs_rebuild = match guard.as_ref() {
             None => true,
-            Some(session) => {
-                session.fingerprint != fingerprint || session.bind_interface != bind
-            }
+            Some(session) => session.fingerprint != fingerprint || session.bind_interface != bind,
         };
         if needs_rebuild {
             if let Some(mut old) = guard.take() {

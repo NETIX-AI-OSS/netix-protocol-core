@@ -66,8 +66,19 @@ fn env_no_tui() -> bool {
     })
 }
 
-pub fn parse_args() -> (bool, PathBuf) {
+/// Parsed command-line arguments.
+#[derive(Debug, Clone)]
+pub struct CliArgs {
+    pub no_tui: bool,
+    pub config_path: PathBuf,
+    /// When set (`--emit-republisher-config PATH`), write a matching
+    /// republisher `config.toml` to this path and exit without serving.
+    pub emit_republisher_config: Option<PathBuf>,
+}
+
+pub fn parse_args() -> CliArgs {
     let mut no_tui = false;
+    let mut emit_republisher_config = None;
     let mut config_path = std::env::var("CONFIG_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("config.yaml"));
@@ -81,6 +92,13 @@ pub fn parse_args() -> (bool, PathBuf) {
                     config_path = PathBuf::from(path);
                 }
             }
+            "--emit-republisher-config" => match args.next() {
+                Some(path) => emit_republisher_config = Some(PathBuf::from(path)),
+                None => {
+                    eprintln!("--emit-republisher-config requires a PATH");
+                    std::process::exit(2);
+                }
+            },
             "--help" | "-h" => {
                 print_help();
                 std::process::exit(0);
@@ -94,16 +112,21 @@ pub fn parse_args() -> (bool, PathBuf) {
         }
     }
 
-    (no_tui, config_path)
+    CliArgs {
+        no_tui,
+        config_path,
+        emit_republisher_config,
+    }
 }
 
 fn print_help() {
     eprintln!(
         "Usage: simulator [OPTIONS] [CONFIG_PATH]\n\n\
          Options:\n\
-           --no-tui          Log-only mode (also SIM_NO_TUI=1 or BACNET_SIM_NO_TUI=1)\n\
-           -c, --config PATH Config file (default: config.yaml)\n\
-           -h, --help        Show this help\n"
+           --no-tui                         Log-only mode (also SIM_NO_TUI=1 or BACNET_SIM_NO_TUI=1)\n\
+           -c, --config PATH                Config file (default: config.yaml)\n\
+           --emit-republisher-config PATH   Write a matching republisher config.toml and exit\n\
+           -h, --help                       Show this help\n"
     );
 }
 

@@ -29,6 +29,18 @@ pub fn telemetry_topic(config: &MqttConfig, point: &PointConfig) -> String {
     join_topic(&[&normalize_prefix(&config.topic_prefix), &tag_path])
 }
 
+/// Topic for a `netix_envelope` device publish: `<device_topic_prefix>/<id>/telemetry`.
+///
+/// Unlike [`telemetry_topic`], the configured prefix is preserved verbatim
+/// (only its trailing slash trimmed) so a leading slash survives — a publish to
+/// `/Netix/Sim/Device/<id>/telemetry` must match a subscription on
+/// `/Netix/Sim/Device/#`, which a leading-slash-stripped topic would not. Only
+/// the `id` segment is sanitised.
+pub fn device_envelope_topic(config: &MqttConfig, id: &str) -> String {
+    let prefix = config.device_topic_prefix.trim_end().trim_end_matches('/');
+    format!("{}/{}/telemetry", prefix, sanitize_segment(id))
+}
+
 /// Default tag path when a point has no explicit `tag_path`: the device key
 /// followed by a slug of the addressing values.
 pub fn default_tag_path(point: &PointConfig) -> String {
@@ -156,6 +168,25 @@ mod tests {
         assert_eq!(
             validate_publish_topic("Netix/Site/#").unwrap_err(),
             TopicError::Wildcard
+        );
+    }
+
+    #[test]
+    fn device_envelope_topic_preserves_leading_slash() {
+        let config = MqttConfig::default();
+        // Default prefix keeps its leading slash so it matches `/Netix/Sim/Device/#`.
+        assert_eq!(
+            device_envelope_topic(&config, "ahu-12"),
+            "/Netix/Sim/Device/ahu-12/telemetry"
+        );
+        // The id segment is sanitised; a trailing prefix slash is trimmed.
+        let trailing = MqttConfig {
+            device_topic_prefix: "/Netix/Sim/Device/".to_string(),
+            ..MqttConfig::default()
+        };
+        assert_eq!(
+            device_envelope_topic(&trailing, "pump room/1"),
+            "/Netix/Sim/Device/pump_room_1/telemetry"
         );
     }
 }
