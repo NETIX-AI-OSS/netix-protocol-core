@@ -158,6 +158,7 @@ impl RepublishProtocol for OpcuaRepublishProtocol {
         Ok(DiscoverOutcome {
             devices: vec![DiscoveredDevice {
                 key: "opcua-server".into(),
+                instance: None,
                 address: url,
                 detail: "OPC UA server".into(),
             }],

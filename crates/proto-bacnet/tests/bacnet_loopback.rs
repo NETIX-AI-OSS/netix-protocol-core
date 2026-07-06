@@ -22,7 +22,8 @@ use bacnet_types::primitives::ObjectIdentifier;
 use bytes::{Bytes, BytesMut};
 use proto_api::Addressing;
 use proto_bacnet::test_support::{
-    collect_discovered_devices, poll_points_once_with_client, scan_device_objects_with_client,
+    browse_device_points_with_client, collect_discovered_devices, poll_points_once_with_client,
+    resolve_device_key_with_client, scan_device_objects_with_client,
 };
 use republish_core::model::{PointConfig, TelemetryValue};
 use std::net::Ipv4Addr;
@@ -198,6 +199,84 @@ async fn falls_back_to_single_read_after_rpm_timeout() {
 
     server.await.unwrap();
     client.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn discovers_identity_faithful_key_and_tag_path() {
+    // A simulator-shaped device: OBJECT_NAME "ahu-12-001" on the Device object,
+    // and a point whose DESCRIPTION is the clean role "discharge-air-temp".
+    // Discovery must derive device_key = "ahu-12" (base_key) and
+    // tag_path = "discharge-air-temp" (DESCRIPTION), with no key prefix — so the
+    // historian tag "{device_key}-{tag_path}" matches the seeded demo tag.
+    let (mut client, mut server_net, mut server_rx) = start_pair(500).await;
+    send_i_am(&mut server_net, client.local_mac(), DEVICE_INSTANCE).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let server = tokio::spawn(async move {
+        // 1 device OBJECT_NAME read (key) + objectList[0] + objectList[1]
+        // + 4 point property reads (name/description/units/present_value).
+        for _ in 0..7 {
+            let received = timeout(Duration::from_secs(2), server_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let Apdu::ConfirmedRequest(request) = apdu::decode_apdu(received.apdu.clone()).unwrap()
+            else {
+                panic!("expected confirmed request");
+            };
+            let rp = ReadPropertyRequest::decode(&request.service_request).unwrap();
+            let value = identity_read_property_value(&rp);
+            send_read_property_ack(
+                &mut server_net,
+                &received.source_mac,
+                request.invoke_id,
+                rp,
+                value,
+            )
+            .await;
+        }
+        server_net.stop().await.unwrap();
+    });
+
+    let device_key = resolve_device_key_with_client(&client, DEVICE_INSTANCE).await;
+    assert_eq!(device_key, "ahu-12");
+
+    let points = browse_device_points_with_client(&client, DEVICE_INSTANCE, &device_key)
+        .await
+        .unwrap();
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].device_key, "ahu-12");
+    assert_eq!(points[0].description.as_deref(), Some("discharge-air-temp"));
+    // The suggested tag path is the clean role from DESCRIPTION, not prefixed.
+    assert_eq!(points[0].suggested_tag_path, "discharge-air-temp");
+
+    server.await.unwrap();
+    client.stop().await.unwrap();
+}
+
+fn identity_read_property_value(request: &ReadPropertyRequest) -> Vec<u8> {
+    match (
+        request.object_identifier.object_type(),
+        request.property_identifier,
+        request.property_array_index,
+    ) {
+        (ObjectType::DEVICE, PropertyIdentifier::OBJECT_NAME, None) => {
+            character_string("ahu-12-001")
+        }
+        (ObjectType::DEVICE, PropertyIdentifier::OBJECT_LIST, Some(0)) => unsigned(1),
+        (ObjectType::DEVICE, PropertyIdentifier::OBJECT_LIST, Some(1)) => {
+            object_id(ObjectType::ANALOG_INPUT, 1)
+        }
+        (ObjectType::ANALOG_INPUT, PropertyIdentifier::OBJECT_NAME, None) => {
+            character_string("ahu-12-001 discharge air temp")
+        }
+        (ObjectType::ANALOG_INPUT, PropertyIdentifier::DESCRIPTION, None) => {
+            character_string("discharge-air-temp")
+        }
+        (ObjectType::ANALOG_INPUT, PropertyIdentifier::UNITS, None) => enumerated(62),
+        (ObjectType::ANALOG_INPUT, PropertyIdentifier::PRESENT_VALUE, None) => real(14.0),
+        other => panic!("unexpected read-property request: {other:?}"),
+    }
 }
 
 async fn start_pair(

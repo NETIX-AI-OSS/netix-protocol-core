@@ -131,6 +131,7 @@ async fn probe_host(ip: Ipv4Addr, params: &ConnParams) -> Option<DiscoveredDevic
     ctx.read_holding_registers(0, 1).await.ok()?.ok()?;
     Some(DiscoveredDevice {
         key: format!("modbus-{}", host_label.replace([':', '.'], "-")),
+        instance: None,
         address: host_label,
         detail: format!("unit {}", params.unit),
     })

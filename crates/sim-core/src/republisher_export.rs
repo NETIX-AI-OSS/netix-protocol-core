@@ -16,22 +16,12 @@
 
 use std::collections::HashMap;
 
+use proto_api::base_key;
+
 use crate::config::{ConfigError, SimulatorConfig};
 
 /// Default per-point poll cadence written into the emitted config.
 const POLL_INTERVAL_SECS: u64 = 30;
-
-/// Strip the `-NNN` instance suffix a device name carries (`"ahu-12-001"` ->
-/// `"ahu-12"`), so a `count == 1` instance maps back to its `name_prefix`.
-fn base_key(name: &str) -> &str {
-    if let Some(idx) = name.rfind('-') {
-        let suffix = &name[idx + 1..];
-        if suffix.len() == 3 && suffix.bytes().all(|b| b.is_ascii_digit()) {
-            return &name[..idx];
-        }
-    }
-    name
-}
 
 /// Minimal TOML basic-string escaping for the identifiers we emit.
 fn toml_escape(value: &str) -> String {
