@@ -3,7 +3,7 @@ pub mod metrics;
 pub mod snapshot;
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -79,9 +79,10 @@ pub struct CliArgs {
 pub fn parse_args() -> CliArgs {
     let mut no_tui = false;
     let mut emit_republisher_config = None;
-    let mut config_path = std::env::var("CONFIG_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("config.yaml"));
+    // An explicit config from `CONFIG_PATH`, `--config`, or a bare positional is
+    // honoured exactly. Only when none is given do we fall back to the
+    // directory-aware default lookup (see `default_config_path`).
+    let mut explicit_config: Option<PathBuf> = std::env::var("CONFIG_PATH").ok().map(PathBuf::from);
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -89,7 +90,7 @@ pub fn parse_args() -> CliArgs {
             "--no-tui" => no_tui = true,
             "--config" | "-c" => {
                 if let Some(path) = args.next() {
-                    config_path = PathBuf::from(path);
+                    explicit_config = Some(PathBuf::from(path));
                 }
             }
             "--emit-republisher-config" => match args.next() {
@@ -108,15 +109,49 @@ pub fn parse_args() -> CliArgs {
                 print_help();
                 std::process::exit(2);
             }
-            path => config_path = PathBuf::from(path),
+            path => explicit_config = Some(PathBuf::from(path)),
         }
     }
 
     CliArgs {
         no_tui,
-        config_path,
+        config_path: explicit_config.unwrap_or_else(default_config_path),
         emit_republisher_config,
     }
+}
+
+/// Filename looked up when the user supplies no explicit config path.
+const DEFAULT_CONFIG_NAME: &str = "config.yaml";
+
+/// Resolve the default config location when none was given on the command line
+/// or via `CONFIG_PATH`. Prefers `config.yaml` in the current working directory,
+/// then one sitting next to the executable, so a config dropped beside
+/// `simulator(.exe)` is picked up even when the process is launched from a
+/// different working directory (e.g. double-clicked on Windows). When neither
+/// exists it returns the working-directory path, which `ensure_config_file`
+/// then seeds with the bundled sample (preserving the previous behaviour).
+fn default_config_path() -> PathBuf {
+    let mut candidates = vec![PathBuf::from(DEFAULT_CONFIG_NAME)];
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+    {
+        candidates.push(dir.join(DEFAULT_CONFIG_NAME));
+    }
+    pick_config_path(&candidates, |p| p.exists())
+}
+
+/// Return the first candidate for which `exists` reports true, else the first
+/// candidate. Split out from [`default_config_path`] so the selection logic is
+/// unit-testable without touching the filesystem.
+fn pick_config_path(candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> PathBuf {
+    candidates
+        .iter()
+        .find(|p| exists(p))
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone())
 }
 
 fn print_help() {
@@ -124,7 +159,7 @@ fn print_help() {
         "Usage: simulator [OPTIONS] [CONFIG_PATH]\n\n\
          Options:\n\
            --no-tui                         Log-only mode (also SIM_NO_TUI=1 or BACNET_SIM_NO_TUI=1)\n\
-           -c, --config PATH                Config file (default: config.yaml)\n\
+           -c, --config PATH                Config file (default: ./config.yaml, else <exe dir>/config.yaml)\n\
            --emit-republisher-config PATH   Write a matching republisher config.toml and exit\n\
            -h, --help                       Show this help\n"
     );
@@ -277,7 +312,13 @@ pub fn restart_process() -> Result<(), Box<dyn std::error::Error>> {
 /// Ensure a config file exists (writing the bundled sample if missing) and load
 /// it. Returns the parsed config or a [`ConfigError`] for the binary to report.
 pub fn bootstrap_config(config_path: &PathBuf) -> Result<SimulatorConfig, ConfigError> {
-    SimulatorConfig::ensure_config_file(config_path)?;
+    if SimulatorConfig::ensure_config_file(config_path)? {
+        warn!(
+            "No config found at {}; wrote the bundled sample (Marina Heights Tower). \
+             Place your config.yaml here or pass --config PATH to run your own scenario.",
+            config_path.display()
+        );
+    }
     let config_path_str = config_path.to_string_lossy();
     SimulatorConfig::load_from_file(&config_path_str)
 }
@@ -319,5 +360,33 @@ mod tests {
                 assert_eq!(detect_run_mode(false), RunMode::Headless);
             });
         });
+    }
+
+    #[test]
+    fn pick_config_path_prefers_working_dir() {
+        let cwd = PathBuf::from("config.yaml");
+        let beside_exe = PathBuf::from("/opt/netix/config.yaml");
+        // Both present -> working-directory copy wins.
+        let picked = pick_config_path(&[cwd.clone(), beside_exe.clone()], |_| true);
+        assert_eq!(picked, cwd);
+    }
+
+    #[test]
+    fn pick_config_path_falls_back_to_exe_dir() {
+        let cwd = PathBuf::from("config.yaml");
+        let beside_exe = PathBuf::from("/opt/netix/config.yaml");
+        // Only the copy next to the exe exists -> it is chosen.
+        let picked = pick_config_path(&[cwd, beside_exe.clone()], |p| p == beside_exe);
+        assert_eq!(picked, beside_exe);
+    }
+
+    #[test]
+    fn pick_config_path_defaults_to_first_when_none_exist() {
+        let cwd = PathBuf::from("config.yaml");
+        let beside_exe = PathBuf::from("/opt/netix/config.yaml");
+        // Neither exists -> first candidate (working dir), which the caller then
+        // seeds with the bundled sample.
+        let picked = pick_config_path(&[cwd.clone(), beside_exe], |_| false);
+        assert_eq!(picked, cwd);
     }
 }
