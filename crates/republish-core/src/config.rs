@@ -92,6 +92,21 @@ pub enum PayloadFormat {
     NetixEnvelope,
 }
 
+impl PayloadFormat {
+    /// All variants, in menu order, for the settings picker.
+    pub const ALL: [Self; 2] = [Self::Scalar, Self::NetixEnvelope];
+}
+
+impl std::fmt::Display for PayloadFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Scalar => "Scalar (value per topic)",
+            Self::NetixEnvelope => "Netix envelope (per device)",
+        };
+        f.write_str(label)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UiTheme {
