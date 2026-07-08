@@ -508,4 +508,68 @@ mod tests {
             .unwrap()
             .contains("publish failed"));
     }
+
+    fn write_test_tls_material(
+        dir: &Path,
+    ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let ca = rcgen::generate_simple_self_signed(vec!["mqtt.local".into()]).unwrap();
+        let ca_path = dir.join("ca.pem");
+        std::fs::write(&ca_path, ca.cert.pem()).unwrap();
+
+        let mut params = rcgen::CertificateParams::new(vec!["client.local".into()]).unwrap();
+        params.is_ca = rcgen::IsCa::NoCa;
+        let client_key = rcgen::KeyPair::generate().unwrap();
+        let client_cert = params.self_signed(&client_key).unwrap();
+        let client_cert_path = dir.join("client.pem");
+        let client_key_path = dir.join("client.key");
+        std::fs::write(&client_cert_path, client_cert.pem()).unwrap();
+        std::fs::write(&client_key_path, client_key.serialize_pem()).unwrap();
+        (ca_path, client_cert_path, client_key_path)
+    }
+
+    #[test]
+    fn build_transport_tcp_when_tls_disabled() {
+        let cfg = MqttConfig {
+            use_tls: false,
+            ..MqttConfig::default()
+        };
+        assert!(matches!(build_transport(&cfg).unwrap(), Transport::Tcp));
+    }
+
+    #[test]
+    fn build_transport_uses_default_tls_without_custom_paths() {
+        let cfg = MqttConfig {
+            use_tls: true,
+            ..MqttConfig::default()
+        };
+        assert!(matches!(build_transport(&cfg).unwrap(), Transport::Tls(_)));
+    }
+
+    #[test]
+    fn build_transport_loads_custom_ca_and_client_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca_path, cert_path, key_path) = write_test_tls_material(dir.path());
+        let cfg = MqttConfig {
+            use_tls: true,
+            ca_cert_path: Some(ca_path.to_string_lossy().into_owned()),
+            client_cert_path: Some(cert_path.to_string_lossy().into_owned()),
+            client_key_path: Some(key_path.to_string_lossy().into_owned()),
+            ..MqttConfig::default()
+        };
+        assert!(matches!(build_transport(&cfg).unwrap(), Transport::Tls(_)));
+    }
+
+    #[test]
+    fn build_transport_allows_client_cert_without_key_at_transport_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca_path, cert_path, _) = write_test_tls_material(dir.path());
+        let cfg = MqttConfig {
+            use_tls: true,
+            ca_cert_path: Some(ca_path.to_string_lossy().into_owned()),
+            client_cert_path: Some(cert_path.to_string_lossy().into_owned()),
+            client_key_path: None,
+            ..MqttConfig::default()
+        };
+        assert!(build_transport(&cfg).is_ok());
+    }
 }

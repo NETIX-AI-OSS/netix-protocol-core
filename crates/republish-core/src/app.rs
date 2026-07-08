@@ -821,8 +821,8 @@ impl RepublisherApp {
                     palette,
                     spec,
                     &self.conn_values,
-                    |k, v| Message::ConnFieldChanged(k, v),
-                    |k, v| Message::ConnBoolToggled(k, v),
+                    Message::ConnFieldChanged,
+                    Message::ConnBoolToggled,
                 ));
             }
             if has_interface && !discover_all {
@@ -861,8 +861,8 @@ impl RepublisherApp {
                     palette,
                     spec,
                     &self.conn_values,
-                    |k, v| Message::ConnFieldChanged(k, v),
-                    |k, v| Message::ConnBoolToggled(k, v),
+                    Message::ConnFieldChanged,
+                    Message::ConnBoolToggled,
                 ));
             }
             content = content.push(ui::card(palette, fields));
@@ -997,7 +997,7 @@ impl RepublisherApp {
                     palette,
                     spec,
                     &self.pe_addr_values,
-                    |k, v| Message::PeAddrField(k, v),
+                    Message::PeAddrField,
                     |_k, _v| Message::NewPoint, // addressing has no bool fields today
                 ));
             }

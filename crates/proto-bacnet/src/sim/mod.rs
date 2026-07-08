@@ -54,7 +54,12 @@ impl SimProtocol for BacnetSimProtocol {
             registry::build_device_registry(&sim.devices)
         };
 
-        let addr = format!("0.0.0.0:{}", ctx.port);
+        let bind_port = if ctx.port == 0 {
+            self.caps.default_port
+        } else {
+            ctx.port
+        };
+        let addr = format!("0.0.0.0:{bind_port}");
         let socket = Arc::new(UdpSocket::bind(&addr).await?);
         if let Err(e) = socket.set_broadcast(true) {
             ctx.log_line(format!("WARN: failed to set broadcast on socket: {e}"));

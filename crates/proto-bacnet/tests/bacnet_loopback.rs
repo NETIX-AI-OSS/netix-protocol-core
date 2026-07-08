@@ -213,27 +213,39 @@ async fn discovers_identity_faithful_key_and_tag_path() {
     sleep(Duration::from_millis(100)).await;
 
     let server = tokio::spawn(async move {
-        // 1 device OBJECT_NAME read (key) + objectList[0] + objectList[1]
-        // + 4 point property reads (name/description/units/present_value).
-        for _ in 0..7 {
-            let received = timeout(Duration::from_secs(2), server_rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
+        // resolve_device_key issues one individual DEVICE OBJECT_NAME read; the
+        // browse then reads objectList[0]/objectList[1] individually and batches
+        // the object's metadata (name/description/units/present_value) into a
+        // single RPM request.
+        loop {
+            let received = match timeout(Duration::from_secs(2), server_rx.recv()).await {
+                Ok(Some(received)) => received,
+                _ => break,
+            };
             let Apdu::ConfirmedRequest(request) = apdu::decode_apdu(received.apdu.clone()).unwrap()
             else {
                 panic!("expected confirmed request");
             };
-            let rp = ReadPropertyRequest::decode(&request.service_request).unwrap();
-            let value = identity_read_property_value(&rp);
-            send_read_property_ack(
-                &mut server_net,
-                &received.source_mac,
-                request.invoke_id,
-                rp,
-                value,
-            )
-            .await;
+            match request.service_choice {
+                ConfirmedServiceChoice::READ_PROPERTY => {
+                    let rp = ReadPropertyRequest::decode(&request.service_request).unwrap();
+                    let value = identity_read_property_value(&rp);
+                    send_read_property_ack(
+                        &mut server_net,
+                        &received.source_mac,
+                        request.invoke_id,
+                        rp,
+                        value,
+                    )
+                    .await;
+                }
+                ConfirmedServiceChoice::READ_PROPERTY_MULTIPLE => {
+                    send_identity_rpm_ack(&mut server_net, &received.source_mac, request.invoke_id)
+                        .await;
+                    break;
+                }
+                other => panic!("unexpected service choice: {other:?}"),
+            }
         }
         server_net.stop().await.unwrap();
     });
@@ -367,6 +379,54 @@ async fn send_rpm_ack(
                 property_value: Some(real(72.0)),
                 error: None,
             }],
+        }],
+    };
+    let mut ack_buf = BytesMut::new();
+    ack.encode(&mut ack_buf);
+    send_complex_ack(
+        server_net,
+        destination_mac,
+        invoke_id,
+        ConfirmedServiceChoice::READ_PROPERTY_MULTIPLE,
+        ack_buf,
+    )
+    .await;
+}
+
+async fn send_identity_rpm_ack(
+    server_net: &mut NetworkLayer<BipTransport>,
+    destination_mac: &[u8],
+    invoke_id: u8,
+) {
+    let ack = ReadPropertyMultipleACK {
+        list_of_read_access_results: vec![ReadAccessResult {
+            object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
+            list_of_results: vec![
+                ReadResultElement {
+                    property_identifier: PropertyIdentifier::OBJECT_NAME,
+                    property_array_index: None,
+                    property_value: Some(character_string("ahu-12-001 discharge air temp")),
+                    error: None,
+                },
+                ReadResultElement {
+                    property_identifier: PropertyIdentifier::DESCRIPTION,
+                    property_array_index: None,
+                    property_value: Some(character_string("discharge-air-temp")),
+                    error: None,
+                },
+                ReadResultElement {
+                    property_identifier: PropertyIdentifier::UNITS,
+                    property_array_index: None,
+                    property_value: Some(enumerated(62)),
+                    error: None,
+                },
+                ReadResultElement {
+                    property_identifier: PropertyIdentifier::PRESENT_VALUE,
+                    property_array_index: None,
+                    property_value: Some(real(14.0)),
+                    error: None,
+                },
+            ],
         }],
     };
     let mut ack_buf = BytesMut::new();

@@ -159,7 +159,9 @@ pub async fn browse_device_points_with_client(
     device_instance: u32,
     device_key: &str,
 ) -> Result<Vec<DiscoveredPoint>> {
-    scan_objects(client, device_instance, device_key).await
+    scan_objects(client, device_instance, device_key)
+        .await
+        .map(|outcome| outcome.points)
 }
 
 /// Poll configured points once using the given client (no MQTT topic assignment).

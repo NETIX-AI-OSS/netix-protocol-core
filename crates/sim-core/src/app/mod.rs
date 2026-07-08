@@ -311,7 +311,7 @@ pub fn restart_process() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Ensure a config file exists (writing the bundled sample if missing) and load
 /// it. Returns the parsed config or a [`ConfigError`] for the binary to report.
-pub fn bootstrap_config(config_path: &PathBuf) -> Result<SimulatorConfig, ConfigError> {
+pub fn bootstrap_config(config_path: &Path) -> Result<SimulatorConfig, ConfigError> {
     if SimulatorConfig::ensure_config_file(config_path)? {
         warn!(
             "No config found at {}; wrote the bundled sample (Marina Heights Tower). \

@@ -422,7 +422,7 @@ mod tests {
         let siblings = HashMap::new();
         for _ in 0..500 {
             let v = s.tick(&ctx(1.0, 0.0, 25.0, &siblings)).as_f32().unwrap();
-            assert!(v >= 0.0 && v <= 100.0);
+            assert!((0.0..=100.0).contains(&v));
         }
     }
 
@@ -594,6 +594,6 @@ mod tests {
             min = min.min(v);
         }
         assert!(max > 13.0 && max <= 15.5);
-        assert!(min < 7.0 && min >= 4.5);
+        assert!((4.5..7.0).contains(&min));
     }
 }

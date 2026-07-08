@@ -8,3 +8,6 @@ target/
 # Editor / OS cruft
 *.rs.bk
 .DS_Store
+
+# OPC UA test PKI material (generated locally; never commit private keys)
+crates/proto-opcua/pki/
