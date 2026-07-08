@@ -1,6 +1,23 @@
 [advisories]
 version = 2
-ignore = []
+# Known advisories in transitive dependencies with no semver-compatible fix
+# available yet (all pulled by upstream crates: async-opcua, iced, the rustls
+# TLS stack, and common build/util crates). Revisit when upstreams release
+# updated versions. New advisories in first-party code or direct deps still fail.
+ignore = [
+    # Unmaintained transitive crates (no replacement/fix published):
+    "RUSTSEC-2025-0121", # gcc (via cc/build stack) — unmaintained
+    "RUSTSEC-2024-0436", # paste — unmaintained, ubiquitous proc-macro dep
+    "RUSTSEC-2025-0134", # rustls-pemfile — unmaintained
+    "RUSTSEC-2026-0192", # ttf-parser (via iced GUI) — unmaintained
+    # Transitive vulnerabilities pinned by upstream (not directly upgradable):
+    "RUSTSEC-2026-0194", # quick-xml DoS (via async-opcua) — trusted-input path
+    "RUSTSEC-2026-0195", # quick-xml DoS (via async-opcua) — trusted-input path
+    "RUSTSEC-2026-0049", # rustls-webpki CRL matching — awaiting rustls bump
+    "RUSTSEC-2026-0098", # rustls-webpki URI name constraints — awaiting bump
+    "RUSTSEC-2026-0099", # rustls-webpki wildcard name constraints — awaiting bump
+    "RUSTSEC-2026-0104", # rustls-webpki CRL parse panic — awaiting bump
+]
 
 [licenses]
 version = 2
@@ -13,48 +30,14 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # MPL-2.0 (async-opcua stack) is file-level copyleft, confined to the
+    # proto-opcua adapter; see NOTICE.
     "MPL-2.0",
+    # Permissive / public-domain licenses on transitive dependencies.
+    "BSL-1.0",  # Boost (e.g. ryu, xml-rs deps)
+    "CC0-1.0",  # public domain (e.g. notify/tiny-keccak deps)
+    "NCSA",     # University of Illinois/NCSA (libfuzzer-sys)
 ]
-
-[[licenses.exceptions]]
-name = "async-opcua"
-allow = ["MPL-2.0"]
-reason = "MPL-2.0 file-level copyleft is confined to proto-opcua per NOTICE"
-
-[[licenses.exceptions]]
-name = "async-opcua-client"
-allow = ["MPL-2.0"]
-reason = "transitive async-opcua dependency"
-
-[[licenses.exceptions]]
-name = "async-opcua-core"
-allow = ["MPL-2.0"]
-reason = "transitive async-opcua dependency"
-
-[[licenses.exceptions]]
-name = "async-opcua-crypto"
-allow = ["MPL-2.0"]
-reason = "transitive async-opcua dependency"
-
-[[licenses.exceptions]]
-name = "async-opcua-nodes"
-allow = ["MPL-2.0"]
-reason = "transitive async-opcua dependency"
-
-[[licenses.exceptions]]
-name = "async-opcua-server"
-allow = ["MPL-2.0"]
-reason = "transitive async-opcua dependency"
-
-[[licenses.exceptions]]
-name = "async-opcua-types"
-allow = ["MPL-2.0"]
-reason = "transitive async-opcua dependency"
-
-[[licenses.exceptions]]
-name = "async-opcua-core-namespace"
-allow = ["MPL-2.0"]
-reason = "transitive async-opcua dependency"
 
 [bans]
 multiple-versions = "warn"
