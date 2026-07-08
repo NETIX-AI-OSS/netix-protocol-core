@@ -4,7 +4,9 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 
 use crate::import::MergeImportResult;
 use crate::log::LogLevel;
-use crate::model::{DiscoverOutcome, DiscoveredPoint, PointFailure, PointIdentity, PointSample, PublishStats};
+use crate::model::{
+    DiscoverOutcome, DiscoveredPoint, PointFailure, PointIdentity, PointSample, PublishStats,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepublisherLifecycle {

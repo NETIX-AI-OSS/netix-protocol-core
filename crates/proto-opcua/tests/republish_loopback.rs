@@ -108,7 +108,10 @@ async fn republisher_browses_and_reads_simulator_over_opcua() {
         .find(|p| p.name.as_deref() == Some("temp") && p.suggested_tag_path.contains("DEV-001"))
         .unwrap_or_else(|| panic!("browse should surface the simulated variable, got {browsed:?}"));
     assert!(
-        point.description.as_deref().is_some_and(|d| d.contains("Simulated")),
+        point
+            .description
+            .as_deref()
+            .is_some_and(|d| d.contains("Simulated")),
         "expected description metadata, got {:?}",
         point.description
     );

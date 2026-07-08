@@ -12,10 +12,10 @@ use bacnet_transport::bip::BipTransport;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
-use republish_core::model::{PointConfig, PollOutcome, TelemetryValue};
+use republish_core::model::{DiscoveredPoint, PointConfig, PollOutcome, TelemetryValue};
 
 use super::value::{decode_object_id, decode_unsigned, object_type_name};
-use super::{poll_with_client, read_scalar, MAX_BROWSE_OBJECTS};
+use super::{poll_with_client, read_scalar, resolve_device_key, scan_objects, MAX_BROWSE_OBJECTS};
 
 type BacnetIpClient = BACnetClient<BipTransport>;
 
@@ -139,6 +139,29 @@ pub async fn scan_device_objects_with_client(
         });
     }
     Ok(objects)
+}
+
+/// Resolve the identity-faithful device key for `device_instance` by reading the
+/// device object's `OBJECT_NAME` (the real discovery path). Returns e.g.
+/// `"ahu-12"` for a device named `"ahu-12-001"`, or `"device_{instance}"` when
+/// no usable name is served.
+pub async fn resolve_device_key_with_client(
+    client: &BacnetIpClient,
+    device_instance: u32,
+) -> String {
+    resolve_device_key(client, device_instance).await
+}
+
+/// Browse a device via the real discovery path, returning the `DiscoveredPoint`s
+/// (with their `suggested_tag_path` derived from DESCRIPTION/OBJECT_NAME).
+pub async fn browse_device_points_with_client(
+    client: &BacnetIpClient,
+    device_instance: u32,
+    device_key: &str,
+) -> Result<Vec<DiscoveredPoint>> {
+    scan_objects(client, device_instance, device_key)
+        .await
+        .map(|outcome| outcome.points)
 }
 
 /// Poll configured points once using the given client (no MQTT topic assignment).

@@ -109,7 +109,12 @@ async fn republisher_discovers_browses_and_polls_simulator_over_bacnet() {
     );
     assert_eq!(discover.devices.len(), 1, "expected one simulated device");
     let device = discover.devices.into_iter().next().unwrap();
-    assert_eq!(device.key, format!("device_{DEVICE_INSTANCE}"));
+    // Identity-faithful discovery derives the key from the device OBJECT_NAME
+    // (via `base_key`), not the numeric instance: the simulator names this
+    // single instance "DEV" (from `name_prefix`), which has no numeric suffix to
+    // strip. The instance itself is still carried for browse/refresh.
+    assert_eq!(device.key, "DEV");
+    assert_eq!(device.instance, Some(DEVICE_INSTANCE));
 
     let browsed = proto.browse(&conn, &device).await.unwrap();
     assert!(
@@ -117,16 +122,14 @@ async fn republisher_discovers_browses_and_polls_simulator_over_bacnet() {
         "unexpected browse warnings: {:?}",
         browsed.warnings
     );
-    assert!(!browsed.points.is_empty(), "browse should find BACnet objects");
+    assert!(
+        !browsed.points.is_empty(),
+        "browse should find BACnet objects"
+    );
     let point = browsed
         .points
         .iter()
-        .find(|p| {
-            p.addressing
-                .get("object_type")
-                .and_then(|v| v.as_str())
-                == Some("analog_input")
-        })
+        .find(|p| p.addressing.get("object_type").and_then(|v| v.as_str()) == Some("analog_input"))
         .unwrap_or_else(|| panic!("browse should surface analog_input, got {browsed:?}"));
 
     let cfg = PointConfig {

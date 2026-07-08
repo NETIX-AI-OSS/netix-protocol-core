@@ -162,6 +162,7 @@ async fn probe_host(ip: Ipv4Addr, params: &ConnParams) -> Option<DiscoveredDevic
     let table = probe_modbus(&mut ctx).await?;
     Some(DiscoveredDevice {
         key: format!("modbus-{}", host_label.replace([':', '.'], "-")),
+        instance: None,
         address: host_label,
         detail: format!("unit {} ({table})", params.unit),
     })
@@ -208,11 +209,7 @@ impl RepublishProtocol for ModbusRepublishProtocol {
         })
     }
 
-    async fn browse(
-        &self,
-        conn: &Addressing,
-        device: &DiscoveredDevice,
-    ) -> Result<BrowseOutcome> {
+    async fn browse(&self, conn: &Addressing, device: &DiscoveredDevice) -> Result<BrowseOutcome> {
         let params = parse_conn(conn)?;
         let mut ctx = connect(&params).await?;
         let mut points = Vec::new();

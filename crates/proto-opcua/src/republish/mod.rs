@@ -7,9 +7,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use opcua::client::{ClientBuilder, IdentityToken, Password, Session};
 use opcua::types::{
-    BrowseDescription, BrowseDirection, DataValue, EUInformation,
-    MessageSecurityMode, NodeClass, NodeId, ObjectId, QualifiedName, ReadValueId,
-    ReferenceDescription, ReferenceTypeId, TimestampsToReturn, Variant,
+    BrowseDescription, BrowseDirection, DataValue, EUInformation, MessageSecurityMode, NodeClass,
+    NodeId, ObjectId, QualifiedName, ReadValueId, ReferenceDescription, ReferenceTypeId,
+    TimestampsToReturn, Variant,
 };
 use proto_api::{Addressing, Capabilities};
 use republish_core::model::{
@@ -220,11 +220,19 @@ fn localized_text_from_variant(variant: &Variant) -> Option<String> {
     match variant {
         Variant::LocalizedText(text) => {
             let value = text.text.to_string();
-            if value.is_empty() { None } else { Some(value) }
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
         }
         Variant::String(value) => {
             let value = value.to_string();
-            if value.is_empty() { None } else { Some(value) }
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
         }
         _ => None,
     }
@@ -287,8 +295,8 @@ impl RepublishProtocol for OpcuaRepublishProtocol {
     }
 
     async fn discover(&self, conn: &Addressing) -> Result<DiscoverOutcome> {
-        let url =
-            conn_str(conn, "endpoint_url").ok_or_else(|| anyhow!("OPC UA endpoint_url is required"))?;
+        let url = conn_str(conn, "endpoint_url")
+            .ok_or_else(|| anyhow!("OPC UA endpoint_url is required"))?;
         let client = discovery_client()?;
         let mut warnings = Vec::new();
         let mut devices: Vec<DiscoveredDevice> = Vec::new();
@@ -306,6 +314,7 @@ impl RepublishProtocol for OpcuaRepublishProtocol {
                     let server_name = endpoint.server.application_name.text.to_string();
                     devices.push(DiscoveredDevice {
                         key: endpoint_device_key(&server_name, &address),
+                        instance: None,
                         address,
                         detail: endpoint_detail(&endpoint),
                     });
@@ -328,6 +337,7 @@ impl RepublishProtocol for OpcuaRepublishProtocol {
             connection.close().await;
             devices.push(DiscoveredDevice {
                 key: endpoint_device_key("opcua-server", &url),
+                instance: None,
                 address: url,
                 detail: "OPC UA server (connect-check only)".into(),
             });
@@ -336,11 +346,7 @@ impl RepublishProtocol for OpcuaRepublishProtocol {
         Ok(DiscoverOutcome { devices, warnings })
     }
 
-    async fn browse(
-        &self,
-        conn: &Addressing,
-        device: &DiscoveredDevice,
-    ) -> Result<BrowseOutcome> {
+    async fn browse(&self, conn: &Addressing, device: &DiscoveredDevice) -> Result<BrowseOutcome> {
         let connection = connect(conn).await?;
         let result = browse_variables(&connection.session, device).await;
         connection.close().await;
@@ -477,8 +483,8 @@ async fn browse_variables(
     let mut preview_reads = Vec::new();
     let mut node_ids = Vec::new();
     for point in &points {
-        let Some(node_id) = conn_str(&point.addressing, "node_id")
-            .and_then(|s| s.parse::<NodeId>().ok())
+        let Some(node_id) =
+            conn_str(&point.addressing, "node_id").and_then(|s| s.parse::<NodeId>().ok())
         else {
             continue;
         };
@@ -496,10 +502,8 @@ async fn browse_variables(
                     point.value = data_value(value_dv);
                 }
                 if let Some(desc_dv) = chunk.get(1) {
-                    point.description = desc_dv
-                        .value
-                        .as_ref()
-                        .and_then(localized_text_from_variant);
+                    point.description =
+                        desc_dv.value.as_ref().and_then(localized_text_from_variant);
                 }
             }
         }

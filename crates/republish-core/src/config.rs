@@ -65,6 +65,46 @@ pub struct MqttConfig {
     pub retain: bool,
     #[serde(default = "default_keep_alive_secs")]
     pub keep_alive_secs: u64,
+    /// How telemetry is serialised onto MQTT (default: bare scalar per point).
+    #[serde(default)]
+    pub payload_format: PayloadFormat,
+    /// Topic prefix for `netix_envelope` publishes; the leading slash is
+    /// preserved so `/Netix/Sim/Device/<id>/telemetry` matches a subscription
+    /// on `/Netix/Sim/Device/#`.
+    #[serde(default = "default_device_topic_prefix")]
+    pub device_topic_prefix: String,
+    /// Start republishing automatically on launch (no manual "Start" click).
+    #[serde(default)]
+    pub autostart: bool,
+}
+
+/// How telemetry is serialised onto MQTT.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PayloadFormat {
+    /// One message per point: the bare JSON scalar value, on the point's tag
+    /// topic (`<topic_prefix>/<tag_path>`).
+    #[default]
+    Scalar,
+    /// One message per device: a `{reason,time,id,points:[{pointName,data,status}]}`
+    /// envelope on `<device_topic_prefix>/<id>/telemetry`, where `id` is the
+    /// point's `device_key` and `pointName` is its `tag_path`.
+    NetixEnvelope,
+}
+
+impl PayloadFormat {
+    /// All variants, in menu order, for the settings picker.
+    pub const ALL: [Self; 2] = [Self::Scalar, Self::NetixEnvelope];
+}
+
+impl std::fmt::Display for PayloadFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Scalar => "Scalar (value per topic)",
+            Self::NetixEnvelope => "Netix envelope (per device)",
+        };
+        f.write_str(label)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,6 +215,14 @@ impl AppConfig {
                     .to_string(),
             );
         }
+        let envelope = self.mqtt.payload_format == PayloadFormat::NetixEnvelope;
+        if envelope {
+            if self.mqtt.device_topic_prefix.trim().is_empty() {
+                return Err("MQTT device topic prefix cannot be empty".to_string());
+            }
+            validate_publish_topic(&crate::topic::device_envelope_topic(&self.mqtt, "sample"))
+                .map_err(|error| format!("MQTT device topic is invalid: {error}"))?;
+        }
         for point in &self.points {
             if point.enabled && point.poll_interval_secs == 0 {
                 return Err(format!(
@@ -182,7 +230,9 @@ impl AppConfig {
                     point.display_name()
                 ));
             }
-            if point.enabled {
+            // In envelope mode the per-point scalar topic is unused; the device
+            // topic is validated above instead.
+            if point.enabled && !envelope {
                 validate_publish_topic(&telemetry_topic(&self.mqtt, point)).map_err(|error| {
                     format!("{} MQTT topic is invalid: {error}", point.display_name())
                 })?;
@@ -210,6 +260,9 @@ impl Default for MqttConfig {
             remember_secrets: false,
             retain: false,
             keep_alive_secs: default_keep_alive_secs(),
+            payload_format: PayloadFormat::default(),
+            device_topic_prefix: default_device_topic_prefix(),
+            autostart: false,
         }
     }
 }
@@ -298,6 +351,10 @@ fn default_health_topic() -> String {
     "Netix/Site/_health/republisher".to_string()
 }
 
+fn default_device_topic_prefix() -> String {
+    "/Netix/Sim/Device".to_string()
+}
+
 fn default_keep_alive_secs() -> u64 {
     30
 }
@@ -362,14 +419,11 @@ mod tests {
             version: 1,
             ..AppConfig::default()
         };
-        config.connections.insert(
-            "bacnet".into(),
-            {
-                let mut conn = Addressing::new();
-                conn.insert("port".into(), serde_json::json!(47808));
-                conn
-            },
-        );
+        config.connections.insert("bacnet".into(), {
+            let mut conn = Addressing::new();
+            conn.insert("port".into(), serde_json::json!(47808));
+            conn
+        });
         config.migrate();
         assert_eq!(config.version, CURRENT_CONFIG_VERSION);
         assert_eq!(
@@ -408,5 +462,40 @@ mod tests {
             ..PointConfig::default()
         });
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn payload_format_defaults_scalar_and_envelope_round_trips() {
+        // Default stays scalar so existing configs are unaffected.
+        assert_eq!(MqttConfig::default().payload_format, PayloadFormat::Scalar);
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        let mut config = AppConfig {
+            protocol: "bacnet".into(),
+            mqtt: MqttConfig {
+                payload_format: PayloadFormat::NetixEnvelope,
+                autostart: true,
+                ..MqttConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        let mut point = PointConfig {
+            device_key: "ahu-12".into(),
+            tag_path: "discharge-air-temp".into(),
+            ..PointConfig::default()
+        };
+        point
+            .addressing
+            .insert("device_instance".into(), serde_json::json!(10100));
+        config.points.push(point);
+        // Envelope configs validate the device topic, not the per-point topics.
+        assert!(config.validate().is_ok(), "{:?}", config.validate());
+
+        save_to_path(&path, &config).unwrap();
+        let loaded = load_from_path(&path).unwrap();
+        assert_eq!(loaded.mqtt.payload_format, PayloadFormat::NetixEnvelope);
+        assert_eq!(loaded.mqtt.device_topic_prefix, "/Netix/Sim/Device");
+        assert!(loaded.mqtt.autostart);
     }
 }

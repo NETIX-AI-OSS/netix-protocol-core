@@ -14,10 +14,12 @@ use proto_api::Addressing;
 
 pub use events::{RepublisherLifecycle, WorkerChannel, WorkerEvent};
 
-use crate::config::MqttConfig;
+use crate::config::{MqttConfig, PayloadFormat};
 use crate::import::{merge_imported_points, point_from_discovered};
 use crate::log::LogLevel;
-use crate::model::{PointConfig, PointFailure, PointIdentity, PointSample, PointStatus, PublishStats};
+use crate::model::{
+    PointConfig, PointFailure, PointIdentity, PointSample, PointStatus, PublishStats,
+};
 use crate::mqtt::{publish_health, HealthSnapshot, RumqttPublisher};
 use crate::protocol::RepublishFactory;
 
@@ -192,12 +194,7 @@ fn emit_refresh_state_change(
                 newly_unresolved
             ),
         );
-        record_unresolved_failures(
-            sender,
-            points,
-            &change.newly_unresolved,
-            point_status,
-        );
+        record_unresolved_failures(sender, points, &change.newly_unresolved, point_status);
     }
 }
 
@@ -208,6 +205,9 @@ fn publish_samples(
     samples: &[PointSample],
     point_status: &mut HashMap<PointIdentity, PointStatus>,
 ) -> PublishStats {
+    if mqtt.payload_format == PayloadFormat::NetixEnvelope {
+        return publish_envelope(sender, publisher, mqtt, samples, point_status);
+    }
     let mut stats = PublishStats::empty();
     for sample in samples {
         stats.queued += 1;
@@ -257,6 +257,120 @@ fn publish_samples(
         stats.last_error = publisher.last_connection_error();
     }
     stats
+}
+
+/// Publish one `netix_envelope` message per device (grouping the batch's samples
+/// by `device_key`): `{"reason","time","id","points":[{"pointName","data",
+/// "status"}]}` on `<device_topic_prefix>/<id>/telemetry`. This matches the
+/// envelope platform MQTT workers ingest, so a demo device's telemetry lands on
+/// the historian tag `<id>-<pointName>`.
+fn publish_envelope(
+    sender: &Sender<WorkerEvent>,
+    publisher: &mut RumqttPublisher,
+    mqtt: &MqttConfig,
+    samples: &[PointSample],
+    point_status: &mut HashMap<PointIdentity, PointStatus>,
+) -> PublishStats {
+    let mut stats = PublishStats::empty();
+
+    // Group by device id, preserving first-seen order.
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, Vec<&PointSample>> = HashMap::new();
+    for sample in samples {
+        stats.queued += 1;
+        let id = envelope_device_id(&sample.point);
+        groups
+            .entry(id.clone())
+            .or_insert_with(|| {
+                order.push(id.clone());
+                Vec::new()
+            })
+            .push(sample);
+    }
+
+    for id in &order {
+        let group = &groups[id];
+        let mut time_ms: i64 = 0;
+        let points: Vec<serde_json::Value> = group
+            .iter()
+            .map(|sample| {
+                time_ms = time_ms.max(sample.timestamp_ms);
+                serde_json::json!({
+                    "pointName": envelope_point_name(&sample.point),
+                    "data": sample.value.to_string(),
+                    "status": "ok",
+                })
+            })
+            .collect();
+        let envelope = serde_json::json!({
+            "reason": "CHANGE_OF_VALUE",
+            "time": time_ms,
+            "id": id,
+            "points": points,
+        });
+        let topic = crate::topic::device_envelope_topic(mqtt, id);
+        let result = serde_json::to_vec(&envelope)
+            .map_err(|error| error.to_string())
+            .and_then(|payload| {
+                publisher
+                    .try_enqueue_sample(&topic, payload, mqtt.retain)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(()) => {
+                stats.published += group.len();
+                for sample in group {
+                    let identity = PointIdentity::from_point(&sample.point);
+                    if let Some(status) = point_status.get_mut(&identity) {
+                        status.record_publish_success();
+                    }
+                    let _ = sender.send(WorkerEvent::PointPublish {
+                        identity,
+                        error: None,
+                    });
+                }
+            }
+            Err(message) => {
+                for sample in group {
+                    stats.record_failure(message.clone());
+                    let identity = PointIdentity::from_point(&sample.point);
+                    if let Some(status) = point_status.get_mut(&identity) {
+                        status.record_publish_failure(&message);
+                    }
+                    let _ = sender.send(WorkerEvent::PointPublish {
+                        identity,
+                        error: Some(message.clone()),
+                    });
+                }
+            }
+        }
+    }
+
+    stats.reconnects = publisher.reconnect_count();
+    if stats.last_error.is_none() {
+        stats.last_error = publisher.last_connection_error();
+    }
+    stats
+}
+
+/// Envelope `id` for a point: its `device_key`, or a display-name fallback.
+fn envelope_device_id(point: &PointConfig) -> String {
+    let key = point.device_key.trim();
+    if key.is_empty() {
+        point.display_name()
+    } else {
+        key.to_string()
+    }
+}
+
+/// Envelope `pointName` for a point: its `tag_path`, or a display-name fallback.
+fn envelope_point_name(point: &PointConfig) -> String {
+    let path = point.tag_path.trim();
+    if path.is_empty() {
+        point.display_name()
+    } else {
+        path.to_string()
+    }
 }
 
 /// Discover devices/servers for the selected protocol.
@@ -434,8 +548,13 @@ pub fn spawn_poll_once(
                             sample.topic = crate::topic::telemetry_topic(&mqtt, &sample.point);
                         }
                         let mut point_status = HashMap::new();
-                        let stats =
-                            publish_samples(&sender, &mut publisher, &mqtt, &samples, &mut point_status);
+                        let stats = publish_samples(
+                            &sender,
+                            &mut publisher,
+                            &mqtt,
+                            &samples,
+                            &mut point_status,
+                        );
                         let _ = sender.send(WorkerEvent::Samples(samples));
                         let _ = sender.send(WorkerEvent::PublishStatus(stats));
                     }
@@ -693,8 +812,8 @@ pub fn spawn_republisher(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossbeam_channel::unbounded;
     use crate::model::{PointConfig, RefreshOutcome};
+    use crossbeam_channel::unbounded;
 
     fn bacnet_point(device: u32, enabled: bool) -> PointConfig {
         let mut addressing = Addressing::new();
@@ -763,11 +882,23 @@ mod tests {
                 until: now + Duration::from_secs(30),
             },
         )]);
-        let due = due_points(now, std::slice::from_ref(&point), &HashSet::new(), &backoffs, &HashMap::new());
+        let due = due_points(
+            now,
+            std::slice::from_ref(&point),
+            &HashSet::new(),
+            &backoffs,
+            &HashMap::new(),
+        );
         assert!(due.is_empty());
 
         backoffs.get_mut(&100).unwrap().until = now - Duration::from_secs(1);
-        let due = due_points(now, std::slice::from_ref(&point), &HashSet::new(), &backoffs, &HashMap::new());
+        let due = due_points(
+            now,
+            std::slice::from_ref(&point),
+            &HashSet::new(),
+            &backoffs,
+            &HashMap::new(),
+        );
         assert_eq!(due.len(), 1);
     }
 
@@ -777,12 +908,30 @@ mod tests {
         let mut point = bacnet_point(100, true);
         point.poll_interval_secs = 60;
         let mut last_poll = HashMap::new();
-        last_poll.insert(PointIdentity::from_point(&point), now - Duration::from_secs(30));
-        let due = due_points(now, std::slice::from_ref(&point), &HashSet::new(), &HashMap::new(), &last_poll);
+        last_poll.insert(
+            PointIdentity::from_point(&point),
+            now - Duration::from_secs(30),
+        );
+        let due = due_points(
+            now,
+            std::slice::from_ref(&point),
+            &HashSet::new(),
+            &HashMap::new(),
+            &last_poll,
+        );
         assert!(due.is_empty());
 
-        last_poll.insert(PointIdentity::from_point(&point), now - Duration::from_secs(60));
-        let due = due_points(now, std::slice::from_ref(&point), &HashSet::new(), &HashMap::new(), &last_poll);
+        last_poll.insert(
+            PointIdentity::from_point(&point),
+            now - Duration::from_secs(60),
+        );
+        let due = due_points(
+            now,
+            std::slice::from_ref(&point),
+            &HashSet::new(),
+            &HashMap::new(),
+            &last_poll,
+        );
         assert_eq!(due.len(), 1);
     }
 }

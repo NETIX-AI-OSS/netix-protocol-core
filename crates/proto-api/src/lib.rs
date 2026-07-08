@@ -18,6 +18,24 @@ use std::collections::BTreeMap;
 /// `{"object_type": "analog_input", "object_instance": 1, "property": "present_value"}` (BACnet).
 pub type Addressing = BTreeMap<String, serde_json::Value>;
 
+/// Strip the `-NNN` instance suffix a device name carries (`"ahu-12-001"` ->
+/// `"ahu-12"`), so a `count == 1` instance maps back to its `name_prefix`.
+///
+/// Shared by the simulator's republisher-config emit (`sim-core`) and BACnet
+/// discovery (`proto-bacnet`) so both derive the identical device key from a
+/// device's `OBJECT_NAME`. The historian tag name is `{device_key}-{tag_path}`,
+/// so emit and discovery MUST apply this rule identically or seeded demo tags
+/// won't match discovered ones.
+pub fn base_key(name: &str) -> &str {
+    if let Some(idx) = name.rfind('-') {
+        let suffix = &name[idx + 1..];
+        if suffix.len() == 3 && suffix.bytes().all(|b| b.is_ascii_digit()) {
+            return &name[..idx];
+        }
+    }
+    name
+}
+
 /// The neutral category of a simulated/published point. Adapters map this to and
 /// from their protocol-native notion (BACnet object type, Modbus table, OPC UA
 /// data type, …).
@@ -221,6 +239,17 @@ mod tests {
         assert_eq!(PointValue::Bool(true).as_f64(), Some(1.0));
         assert_eq!(PointValue::Text("x".into()).as_f64(), None);
         assert_eq!(PointValue::UInt(0).as_bool(), Some(false));
+    }
+
+    #[test]
+    fn base_key_strips_instance_suffix() {
+        assert_eq!(base_key("ahu-12-001"), "ahu-12");
+        assert_eq!(base_key("201-001"), "201");
+        assert_eq!(
+            base_key("demo-weather-station-01-001"),
+            "demo-weather-station-01"
+        );
+        assert_eq!(base_key("plain"), "plain");
     }
 
     #[test]

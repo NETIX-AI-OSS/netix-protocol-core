@@ -65,7 +65,17 @@ impl PointConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredDevice {
     /// Stable, human-friendly key used as `PointConfig::device_key`.
+    ///
+    /// For BACnet this is derived from the device object's `OBJECT_NAME` (via
+    /// `proto_api::base_key`) when available, so it need not encode the device
+    /// instance; use [`DiscoveredDevice::instance`] for instance-based
+    /// addressing (browse/refresh) rather than parsing the key.
     pub key: String,
+    /// Protocol-native numeric device instance, when the discovery protocol has
+    /// one (e.g. the BACnet device instance). Carried alongside the key so
+    /// browse/refresh can resolve the device even when the key is a friendly
+    /// name that no longer encodes the instance.
+    pub instance: Option<u32>,
     /// Network address (e.g. `192.168.1.10:502`, `opc.tcp://host:4840`).
     pub address: String,
     /// Free-form detail line for the UI (vendor, model, instance, …).

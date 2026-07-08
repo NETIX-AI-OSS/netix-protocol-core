@@ -40,6 +40,25 @@ fn neutral_to_property(value: NeutralValue) -> PropertyValue {
     }
 }
 
+/// Encode a point's `present_value`. BACnet models the present-value of a
+/// Binary object as `BACnetBinaryPV` — an *Enumerated* (0 = inactive,
+/// 1 = active) — not an Application Boolean. Encoding it as Enumerated is both
+/// spec-correct and keeps polling clients happy: a republisher reading a raw
+/// Application Boolean would surface the value as the text `"true"`/`"false"`,
+/// whereas an Enumerated reads back as numeric `0`/`1`. Non-binary objects keep
+/// their natural representation.
+fn present_value_property(object_type: ObjectType, value: NeutralValue) -> PropertyValue {
+    if let NeutralValue::Bool(state) = value {
+        if matches!(
+            object_type,
+            ObjectType::BinaryInput | ObjectType::BinaryOutput | ObjectType::BinaryValue
+        ) {
+            return PropertyValue::Enumerated(u32::from(state));
+        }
+    }
+    neutral_to_property(value)
+}
+
 pub fn handle_read_property(
     service_data: &[u8],
     devices: &[DeviceEntry],
@@ -147,7 +166,7 @@ fn read_point_property(
         }
         PropertyIdentifier::PresentValue => simulation
             .neutral_value(device_id, &point.object_type_str, point.instance)
-            .map(neutral_to_property),
+            .map(|value| present_value_property(point.object_type, value)),
         PropertyIdentifier::Units => Some(PropertyValue::Enumerated(point.units)),
         PropertyIdentifier::ObjectIdentifier => Some(PropertyValue::ObjectIdentifier(
             ObjectIdentifier::new(point.object_type, point.instance),
@@ -379,6 +398,30 @@ mod tests {
             ),
             Some(PropertyValue::Unsigned(_))
         ));
+    }
+
+    #[test]
+    fn point_present_value_enumerated_for_binary() {
+        // BinaryPV must be served as Enumerated 0/1, not Application Boolean, so
+        // republishers surface it as numeric 0/1 rather than "true"/"false".
+        let (sim, registry) = make_simulation_and_registry(vec![pt(
+            "run",
+            "binary_input",
+            None,
+            ProfileSpec::ConstantBool { value: true },
+        )]);
+        let device = &registry[0];
+        let point = device.find_point(ObjectType::BinaryInput, 1).unwrap();
+        assert_eq!(
+            read_point_property(
+                &sim,
+                device.device_id,
+                &device.name,
+                point,
+                PropertyIdentifier::PresentValue
+            ),
+            Some(PropertyValue::Enumerated(1))
+        );
     }
 
     #[test]

@@ -6,16 +6,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use opcua::crypto::SecurityPolicy;
 use opcua::server::address_space::ReferenceDirection;
 use opcua::server::address_space::VariableBuilder;
 use opcua::server::diagnostics::NamespaceMetadata;
 use opcua::server::node_manager::memory::{simple_node_manager, SimpleNodeManager};
-use opcua::server::{ANONYMOUS_USER_TOKEN_ID, ServerBuilder};
+use opcua::server::{ServerBuilder, ANONYMOUS_USER_TOKEN_ID};
 use opcua::types::{
     DataTypeId, DataValue, EUInformation, ExtensionObject, LocalizedText, MessageSecurityMode,
     NodeId, ObjectId, QualifiedName, ReferenceTypeId, StatusCode, UAString, Variant,
 };
-use opcua::crypto::SecurityPolicy;
 use proto_api::{Addressing, Capabilities, PointValue};
 use sim_core::{SimProtocol, SimServeContext};
 
@@ -111,17 +111,15 @@ impl SimProtocol for OpcuaSimProtocol {
                     "simulator",
                 ));
             if secured {
-                builder = builder
-                    .create_sample_keypair(true)
-                    .add_endpoint(
-                        "basic256sha256_sign_encrypt",
-                        (
-                            "/",
-                            SecurityPolicy::Basic256Sha256,
-                            MessageSecurityMode::SignAndEncrypt,
-                            &[ANONYMOUS_USER_TOKEN_ID] as &[&str],
-                        ),
-                    );
+                builder = builder.create_sample_keypair(true).add_endpoint(
+                    "basic256sha256_sign_encrypt",
+                    (
+                        "/",
+                        SecurityPolicy::Basic256Sha256,
+                        MessageSecurityMode::SignAndEncrypt,
+                        &[ANONYMOUS_USER_TOKEN_ID] as &[&str],
+                    ),
+                );
             }
             builder
                 .build()
@@ -168,11 +166,12 @@ impl SimProtocol for OpcuaSimProtocol {
                     let display = point.label.replace('_', " ");
                     let description = format!("Simulated {display}");
                     let variant = neutral_to_variant(point.neutral_value());
-                    let var = VariableBuilder::new(&node_id, point.label.as_str(), display.as_str())
-                        .description(description)
-                        .data_type(DataTypeId::Double)
-                        .value(variant.clone())
-                        .build();
+                    let var =
+                        VariableBuilder::new(&node_id, point.label.as_str(), display.as_str())
+                            .description(description)
+                            .data_type(DataTypeId::Double)
+                            .value(variant.clone())
+                            .build();
                     space.insert(
                         var,
                         Some(&[(
@@ -208,14 +207,11 @@ impl SimProtocol for OpcuaSimProtocol {
                             display_name: LocalizedText::new("", units),
                             description: LocalizedText::new("", units),
                         };
-                        let eu_var = VariableBuilder::new(
-                            &eu_node,
-                            "EngineeringUnits",
-                            "EngineeringUnits",
-                        )
-                        .data_type(DataTypeId::EUInformation)
-                        .value(Variant::from(ExtensionObject::from_message(eu)))
-                        .build();
+                        let eu_var =
+                            VariableBuilder::new(&eu_node, "EngineeringUnits", "EngineeringUnits")
+                                .data_type(DataTypeId::EUInformation)
+                                .value(Variant::from(ExtensionObject::from_message(eu)))
+                                .build();
                         space.insert(
                             eu_var,
                             Some(&[(

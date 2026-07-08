@@ -17,7 +17,7 @@ use iced::{window, Alignment, Element, Font, Length, Size, Subscription, Task, T
 
 use proto_api::{Capabilities, DiscoveryKind, FieldKind, FieldSpec};
 
-use crate::config::{self, AppConfig, UiTheme};
+use crate::config::{self, AppConfig, PayloadFormat, UiTheme};
 use crate::log::{LogBuffer, LogLevel};
 use crate::model::{
     json_scalar, DiscoveredDevice, DiscoveredPoint, PointConfig, PointIdentity, PointSample,
@@ -99,6 +99,9 @@ pub enum Message {
     MqttClientId(String),
     MqttTopicPrefix(String),
     MqttHealthTopic(String),
+    MqttPayloadFormat(PayloadFormat),
+    MqttDeviceTopicPrefix(String),
+    MqttAutostart(bool),
     MqttUsername(String),
     MqttPassword(String),
     MqttCaCert(String),
@@ -209,6 +212,12 @@ impl RepublisherApp {
             logs,
         };
         app.reset_point_editor();
+        // Unattended deployments (e.g. an edge VM) set `autostart` so publishing
+        // begins on launch with no manual "Start" click. Invalid configs are
+        // reported by start_republisher and simply don't start.
+        if app.config.mqtt.autostart {
+            app.start_republisher();
+        }
         (app, Task::none())
     }
 
@@ -362,6 +371,9 @@ impl RepublisherApp {
             Message::MqttClientId(v) => self.config.mqtt.client_id = v,
             Message::MqttTopicPrefix(v) => self.config.mqtt.topic_prefix = v,
             Message::MqttHealthTopic(v) => self.config.mqtt.health_topic = v,
+            Message::MqttPayloadFormat(v) => self.config.mqtt.payload_format = v,
+            Message::MqttDeviceTopicPrefix(v) => self.config.mqtt.device_topic_prefix = v,
+            Message::MqttAutostart(v) => self.config.mqtt.autostart = v,
             Message::MqttUsername(v) => self.config.mqtt.username = non_empty(v),
             Message::MqttPassword(v) => self.config.mqtt.password = non_empty(v),
             Message::MqttCaCert(v) => self.config.mqtt.ca_cert_path = non_empty(v),
@@ -825,11 +837,10 @@ impl RepublisherApp {
                             .size(13)
                             .color(palette.text)
                             .width(Length::Fixed(160.0)),
-                        pick_list(
-                            choices,
-                            selected,
-                            |addr| Message::ConnFieldChanged("interface".into(), addr.to_string())
-                        ),
+                        pick_list(choices, selected, |addr| Message::ConnFieldChanged(
+                            "interface".into(),
+                            addr.to_string()
+                        )),
                         ui::action_button(
                             palette,
                             Icon::Refresh,
@@ -841,7 +852,10 @@ impl RepublisherApp {
                     .spacing(10)
                     .align_y(Alignment::Center),
                 );
-            } else if let Some(spec) = caps.connection_fields.iter().find(|field| field.key == "interface")
+            } else if let Some(spec) = caps
+                .connection_fields
+                .iter()
+                .find(|field| field.key == "interface")
             {
                 fields = fields.push(self.render_field(
                     palette,
@@ -1230,6 +1244,26 @@ impl RepublisherApp {
                 &mqtt.topic_prefix,
                 Message::MqttTopicPrefix
             ),
+            row![
+                text("Payload format")
+                    .size(13)
+                    .color(palette.text)
+                    .width(Length::Fixed(160.0)),
+                pick_list(
+                    PayloadFormat::ALL.to_vec(),
+                    Some(mqtt.payload_format),
+                    Message::MqttPayloadFormat
+                ),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            ui::labeled_input(
+                palette,
+                "Device topic prefix",
+                "envelope mode, e.g. /Netix/Sim/Device",
+                &mqtt.device_topic_prefix,
+                Message::MqttDeviceTopicPrefix
+            ),
             ui::labeled_input(
                 palette,
                 "Health topic",
@@ -1292,6 +1326,9 @@ impl RepublisherApp {
             checkbox(mqtt.remember_secrets)
                 .label("Remember secrets in config")
                 .on_toggle(Message::MqttRememberSecrets),
+            checkbox(mqtt.autostart)
+                .label("Auto-start republishing on launch")
+                .on_toggle(Message::MqttAutostart),
             row![
                 text("Theme").size(13).color(palette.text),
                 pick_list(

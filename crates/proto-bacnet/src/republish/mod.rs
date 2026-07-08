@@ -67,7 +67,7 @@ impl ConnFingerprint {
             broadcast: cfg.broadcast,
             discovery_window_ms: cfg.discovery_window_ms,
             apdu_timeout_ms: cfg.apdu_timeout_ms,
-            bbmd: cfg.bbmd.as_ref().map(|b| (b.address, b.port, b.ttl_secs as u16)),
+            bbmd: cfg.bbmd.as_ref().map(|b| (b.address, b.port, b.ttl_secs)),
         }
     }
 }
@@ -90,9 +90,7 @@ impl BacnetRepublishProtocol {
         let fingerprint = ConnFingerprint::from_cfg(cfg);
         let needs_rebuild = match guard.as_ref() {
             None => true,
-            Some(session) => {
-                session.fingerprint != fingerprint || session.bind_interface != bind
-            }
+            Some(session) => session.fingerprint != fingerprint || session.bind_interface != bind,
         };
         if needs_rebuild {
             if let Some(mut old) = guard.take() {
@@ -260,20 +258,46 @@ fn instance_from_key(key: &str) -> Option<u32> {
     key.strip_prefix("device_").and_then(|n| n.parse().ok())
 }
 
+/// Resolve the device instance a browse/refresh request targets: prefer the
+/// numeric instance carried on the discovered device (identity-faithful keys no
+/// longer encode it), and fall back to parsing a legacy `device_{instance}` key.
+fn resolve_device_instance(device: &DiscoveredDevice) -> Option<u32> {
+    device.instance.or_else(|| instance_from_key(&device.key))
+}
+
+/// Read the Device object's `OBJECT_NAME` and derive the identity-faithful key
+/// via [`proto_api::base_key`] (matching the simulator's emitted config). Falls
+/// back to `device_{instance}` when the name is unavailable or empty.
+async fn resolve_device_key(client: &BacnetIpClient, instance: u32) -> String {
+    let Ok(device_oid) = ObjectIdentifier::new(ObjectType::DEVICE, instance) else {
+        return device_key(instance);
+    };
+    let object_name = read_scalar(
+        client,
+        instance,
+        device_oid,
+        PropertyIdentifier::OBJECT_NAME,
+    )
+    .await
+    .map(|value| value.to_string());
+    match object_name {
+        Some(name) if !name.trim().is_empty() => proto_api::base_key(name.trim()).to_string(),
+        _ => device_key(instance),
+    }
+}
+
 async fn collect_devices(client: &BacnetIpClient) -> Vec<DiscoveredDevice> {
-    let mut devices = client
-        .discovered_devices()
-        .await
-        .into_iter()
-        .map(|device| {
-            let instance = device.object_identifier.instance_number();
-            DiscoveredDevice {
-                key: device_key(instance),
-                address: format_bip_mac(device.mac_address.as_slice()),
-                detail: format!("instance {instance}, vendor {}", device.vendor_id),
-            }
-        })
-        .collect::<Vec<_>>();
+    let discovered = client.discovered_devices().await;
+    let mut devices = Vec::with_capacity(discovered.len());
+    for device in discovered {
+        let instance = device.object_identifier.instance_number();
+        devices.push(DiscoveredDevice {
+            key: resolve_device_key(client, instance).await,
+            instance: Some(instance),
+            address: format_bip_mac(device.mac_address.as_slice()),
+            detail: format!("instance {instance}, vendor {}", device.vendor_id),
+        });
+    }
     devices.sort_by(|a, b| a.key.cmp(&b.key));
     devices
 }
@@ -287,7 +311,10 @@ impl RepublishProtocol for BacnetRepublishProtocol {
     async fn discover(&self, conn: &Addressing) -> Result<DiscoverOutcome> {
         let interfaces = ipv4_interfaces();
         let cfg = parse_conn(conn, &interfaces);
-        let mut by_key: HashMap<String, DiscoveredDevice> = HashMap::new();
+        // Dedupe by numeric device instance, not by key: identity-faithful keys
+        // derived from OBJECT_NAME can collide across distinct devices, and we
+        // must not silently drop a device just because it shares a base name.
+        let mut by_instance: HashMap<u32, DiscoveredDevice> = HashMap::new();
         let mut warnings = Vec::new();
 
         for interface in target_interfaces(&cfg, &interfaces) {
@@ -308,23 +335,20 @@ impl RepublishProtocol for BacnetRepublishProtocol {
                 }
                 tokio::time::sleep(Duration::from_millis(cfg.discovery_window_ms)).await;
                 for device in collect_devices(&client).await {
-                    by_key.insert(device.key.clone(), device);
+                    let instance = device.instance.unwrap_or_default();
+                    by_instance.insert(instance, device);
                 }
             }
             client.stop().await.ok();
         }
 
-        let mut devices: Vec<DiscoveredDevice> = by_key.into_values().collect();
+        let mut devices: Vec<DiscoveredDevice> = by_instance.into_values().collect();
         devices.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(DiscoverOutcome { devices, warnings })
     }
 
-    async fn browse(
-        &self,
-        conn: &Addressing,
-        device: &DiscoveredDevice,
-    ) -> Result<BrowseOutcome> {
-        let device_instance = instance_from_key(&device.key)
+    async fn browse(&self, conn: &Addressing, device: &DiscoveredDevice) -> Result<BrowseOutcome> {
+        let device_instance = resolve_device_instance(device)
             .ok_or_else(|| anyhow!("cannot determine device instance from '{}'", device.key))?;
         let interfaces = ipv4_interfaces();
         let cfg = parse_conn(conn, &interfaces);
@@ -447,7 +471,8 @@ async fn scan_objects(
             .await
         {
             Ok(ack) => {
-                let mut by_object = HashMap::<ObjectIdentifier, HashMap<PropertyIdentifier, Vec<u8>>>::new();
+                let mut by_object =
+                    HashMap::<ObjectIdentifier, HashMap<PropertyIdentifier, Vec<u8>>>::new();
                 for result in ack.list_of_read_access_results {
                     let slot = by_object.entry(result.object_identifier).or_default();
                     for element in result.list_of_results {
@@ -481,10 +506,12 @@ async fn scan_objects(
                         device_instance,
                         entry.object_type,
                         entry.object_instance,
-                        name,
-                        description,
-                        units,
-                        present,
+                        ScannedMetadata {
+                            name,
+                            description,
+                            units,
+                            present,
+                        },
                     ));
                 }
             }
@@ -533,10 +560,12 @@ async fn scan_objects(
                         device_instance,
                         entry.object_type,
                         entry.object_instance,
-                        name,
-                        description,
-                        units,
-                        present,
+                        ScannedMetadata {
+                            name,
+                            description,
+                            units,
+                            present,
+                        },
                     ));
                 }
             }
@@ -547,9 +576,16 @@ async fn scan_objects(
 }
 
 fn object_list_truncation_warning(count: usize) -> Option<String> {
-    (count > MAX_BROWSE_OBJECTS).then(|| {
-        format!("Object list has {count} objects; browse capped at {MAX_BROWSE_OBJECTS}.")
-    })
+    (count > MAX_BROWSE_OBJECTS)
+        .then(|| format!("Object list has {count} objects; browse capped at {MAX_BROWSE_OBJECTS}."))
+}
+
+/// Scalar metadata read back for a single BACnet object during browse.
+struct ScannedMetadata {
+    name: Option<String>,
+    description: Option<String>,
+    units: Option<String>,
+    present: Option<republish_core::TelemetryValue>,
 }
 
 fn discovered_point_from_object(
@@ -557,19 +593,27 @@ fn discovered_point_from_object(
     device_instance: u32,
     object_type: ObjectType,
     object_instance: u32,
-    name: Option<String>,
-    description: Option<String>,
-    units: Option<String>,
-    present: Option<republish_core::TelemetryValue>,
+    meta: ScannedMetadata,
 ) -> DiscoveredPoint {
+    let ScannedMetadata {
+        name,
+        description,
+        units,
+        present,
+    } = meta;
     let type_name = object_type_name(object_type);
     let mut addressing = Addressing::new();
     addressing.insert("device_instance".into(), serde_json::json!(device_instance));
     addressing.insert("object_type".into(), serde_json::json!(type_name.clone()));
     addressing.insert("object_instance".into(), serde_json::json!(object_instance));
     addressing.insert("property".into(), serde_json::json!("present_value"));
-    let point_name = name
+    // Identity-faithful tag path: prefer the point's DESCRIPTION (the clean
+    // role the simulator emits, matching `{device_key}-{tag_path}` seeded tags),
+    // then OBJECT_NAME, then a synthetic type+instance label. Never prefix with
+    // the device key — the historian joins them itself.
+    let suggested_tag_path = description
         .clone()
+        .or_else(|| name.clone())
         .unwrap_or_else(|| format!("{type_name}_{object_instance}"));
     DiscoveredPoint {
         device_key: dev_key.to_string(),
@@ -578,7 +622,7 @@ fn discovered_point_from_object(
         units,
         value: present,
         addressing,
-        suggested_tag_path: format!("{dev_key}/{point_name}"),
+        suggested_tag_path,
     }
 }
 
