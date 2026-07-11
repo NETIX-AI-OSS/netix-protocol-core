@@ -40,10 +40,15 @@ pub enum WorkerEvent {
     Finished(String),
 }
 
+/// Sending half of the worker-event channel, as consumed by the spawn_* APIs.
+pub type WorkerSender = Sender<WorkerEvent>;
+/// Receiving half of the worker-event channel, drained by a UI/daemon.
+pub type WorkerReceiver = Receiver<WorkerEvent>;
+
 /// A bidirectional channel pair the UI holds.
 pub struct WorkerChannel {
-    pub sender: Sender<WorkerEvent>,
-    pub receiver: Receiver<WorkerEvent>,
+    pub sender: WorkerSender,
+    pub receiver: WorkerReceiver,
 }
 
 impl Default for WorkerChannel {

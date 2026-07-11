@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Sender;
 use proto_api::Addressing;
 
-pub use events::{RepublisherLifecycle, WorkerChannel, WorkerEvent};
+pub use events::{RepublisherLifecycle, WorkerChannel, WorkerEvent, WorkerReceiver, WorkerSender};
 
 use crate::config::{MqttConfig, PayloadFormat};
 use crate::import::{merge_imported_points, point_from_discovered};

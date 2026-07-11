@@ -3,13 +3,19 @@ name = "republish-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Protocol-agnostic republisher: MQTT/TLS publishing, worker orchestration, and capability-driven iced GUI."
+description = "Protocol-agnostic republisher: MQTT/TLS publishing, worker orchestration, and an optional capability-driven iced GUI (feature `gui`)."
+
+[features]
+default = ["gui"]
+# The iced desktop GUI (`app`/`ui` modules and `run`). Disable for headless
+# consumers (web/daemon builds) to drop the whole windowing dependency tree.
+gui = ["dep:iced", "dep:chrono"]
 
 [dependencies]
 proto-api = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-chrono = { workspace = true }
+chrono = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true }
 directories = "6.0"
 get_if_addrs = "0.5"
@@ -23,7 +29,7 @@ rumqttc = "0.25.1"
 rustls-native-certs = "0.8"
 rustls-pemfile = "2.2"
 
-iced = { version = "0.14", features = ["fira-sans", "image", "tokio", "svg"] }
+iced = { version = "0.14", features = ["fira-sans", "image", "tokio", "svg"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

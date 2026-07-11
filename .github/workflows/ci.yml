@@ -38,6 +38,35 @@ jobs:
       - name: Test cores
         run: cargo test --locked -p proto-api -p sim-core -p republish-core
 
+  headless:
+    name: Headless republish-core (no gui feature)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      # Deliberately NO iced/windowing apt packages: headless consumers (the
+      # containerized web republisher) build without them.
+      - name: Assert iced is absent from the headless graph
+        run: |
+          if cargo tree -p republish-core --no-default-features -e normal | grep -q '^.*\biced\b'; then
+            echo "iced leaked into the headless dependency graph" >&2
+            exit 1
+          fi
+      - name: Clippy (headless)
+        run: cargo clippy --locked -p republish-core --no-default-features --all-targets -- -D warnings
+      - name: Test (headless)
+        run: cargo test --locked -p republish-core --no-default-features
+      - name: Adapters build headless
+        run: |
+          cargo check --locked -p proto-bacnet --features republish
+          cargo check --locked -p proto-modbus --features republish
+          cargo check --locked -p proto-opcua --features republish
+
   feature-matrix:
     name: Adapter feature permutations
     runs-on: ubuntu-24.04

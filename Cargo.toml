@@ -39,7 +39,10 @@ toml = "0.9"
 # Internal crates.
 proto-api = { path = "crates/proto-api" }
 sim-core = { path = "crates/sim-core" }
-republish-core = { path = "crates/republish-core" }
+# Headless by default so protocol adapters never drag the iced GUI stack into
+# non-GUI consumers (e.g. the containerized web republisher); GUI binaries
+# enable the `gui` feature on their direct republish-core dependency.
+republish-core = { path = "crates/republish-core", default-features = false }
 proto-bacnet = { path = "crates/proto-bacnet" }
 proto-modbus = { path = "crates/proto-modbus" }
 proto-opcua = { path = "crates/proto-opcua" }
