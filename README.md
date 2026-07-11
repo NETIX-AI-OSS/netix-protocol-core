@@ -15,7 +15,7 @@ repositories and depend on these crates as git dependencies:
 crates/
   proto-api          neutral types: PointKind, PointValue, Addressing, Capabilities, FieldSpec
   sim-core           protocol-agnostic simulator: engine, TUI, app lifecycle; SimProtocol trait + registry
-  republish-core     protocol-agnostic republisher: MQTT/TLS, worker, iced GUI; RepublishProtocol trait + registry
+  republish-core     protocol-agnostic republisher: MQTT/TLS, worker; iced GUI behind feature `gui` (default); RepublishProtocol trait + registry
   proto-bacnet       BACnet/IP adapter   (features: sim, republish)   [reference implementation]
   proto-modbus       Modbus TCP adapter  (features: sim, republish)
   proto-opcua        OPC UA adapter      (features: sim, republish)   [uses async-opcua, MPL-2.0]
