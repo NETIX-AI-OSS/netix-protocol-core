@@ -81,4 +81,42 @@ mod tests {
         ));
         assert!(is_discovery_interface("en0", Ipv4Addr::new(172, 20, 10, 3)));
     }
+
+    #[test]
+    fn display_formats_name_and_addr() {
+        let interface = NetworkInterface {
+            name: "en0".into(),
+            addr: Ipv4Addr::new(192, 168, 1, 5),
+        };
+        assert_eq!(interface.to_string(), "en0 (192.168.1.5)");
+    }
+
+    #[test]
+    fn interface_choices_sorts_and_dedups_addrs() {
+        let interfaces = vec![
+            NetworkInterface {
+                name: "en1".into(),
+                addr: Ipv4Addr::new(10, 0, 0, 2),
+            },
+            NetworkInterface {
+                name: "en0".into(),
+                addr: Ipv4Addr::new(10, 0, 0, 1),
+            },
+            // Same addr behind a different interface name collapses to one choice.
+            NetworkInterface {
+                name: "en2".into(),
+                addr: Ipv4Addr::new(10, 0, 0, 1),
+            },
+        ];
+        let choices = interface_choices(&interfaces);
+        assert_eq!(
+            choices,
+            vec![Ipv4Addr::new(10, 0, 0, 1), Ipv4Addr::new(10, 0, 0, 2)]
+        );
+    }
+
+    #[test]
+    fn interface_choices_empty_input_yields_no_choices() {
+        assert!(interface_choices(&[]).is_empty());
+    }
 }

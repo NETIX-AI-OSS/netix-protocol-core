@@ -367,6 +367,111 @@ mod tests {
     }
 
     #[test]
+    fn effective_protocols_returns_configured_list_when_present() {
+        let mut cfg = sample_config();
+        cfg.protocols = vec![
+            ProtocolInstanceConfig {
+                id: "modbus".into(),
+                port: Some(502),
+                options: Addressing::new(),
+            },
+            ProtocolInstanceConfig {
+                id: "opcua".into(),
+                port: None,
+                options: Addressing::new(),
+            },
+        ];
+        let protocols = cfg.effective_protocols();
+        assert_eq!(protocols.len(), 2);
+        assert_eq!(protocols[0].id, "modbus");
+        assert_eq!(protocols[0].port, Some(502));
+        assert_eq!(protocols[1].id, "opcua");
+        assert_eq!(protocols[1].port, None);
+    }
+
+    #[test]
+    fn config_error_display_formats_each_variant() {
+        let io = ConfigError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "missing",
+        ));
+        assert!(io.to_string().starts_with("io error:"), "{io}");
+
+        let yaml_err = serde_yaml::from_str::<SimulatorConfig>("- not: a mapping").unwrap_err();
+        assert!(ConfigError::Yaml(yaml_err)
+            .to_string()
+            .starts_with("yaml error:"));
+
+        assert_eq!(
+            ConfigError::UnknownTemplate("ghost".into()).to_string(),
+            "unknown template: ghost"
+        );
+
+        assert_eq!(
+            ConfigError::CountExceedsBlock {
+                template: "tpl_a".into(),
+                count: 200,
+                block: 100,
+            }
+            .to_string(),
+            "instance count 200 for template 'tpl_a' exceeds per_template_block 100"
+        );
+
+        let json_err = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        assert!(ConfigError::Serialize(json_err)
+            .to_string()
+            .starts_with("serialize error:"));
+    }
+
+    #[test]
+    fn write_config_creates_missing_parent_dirs() {
+        let dir = std::env::temp_dir().join(format!(
+            "simcore-write-config-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Nested path whose parent directories do not exist yet exercises the
+        // create_dir_all parent branch.
+        let path = dir.join("nested/deeper/config.yaml");
+        SimulatorConfig::write_config(&path, &sample_config()).unwrap();
+        assert!(path.is_file());
+        let loaded = SimulatorConfig::load_from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(loaded.instances[0].name_prefix, "A");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_default_config_creates_missing_parent_dirs() {
+        let dir = std::env::temp_dir().join(format!(
+            "simcore-write-default-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("a/b/c/config.yaml");
+        SimulatorConfig::write_default_config(&path).unwrap();
+        assert!(path.is_file());
+        let loaded = SimulatorConfig::load_from_file(path.to_str().unwrap()).unwrap();
+        assert!(!loaded.instances.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_config_file_creates_missing_parent_dirs() {
+        let dir = std::env::temp_dir().join(format!(
+            "simcore-ensure-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("x/y/config.yaml");
+        assert!(SimulatorConfig::ensure_config_file(&path).unwrap());
+        assert!(path.is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn expansion_assigns_unique_device_ids() {
         let cfg = sample_config();
         let devs = cfg.expand().unwrap();

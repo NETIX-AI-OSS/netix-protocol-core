@@ -239,6 +239,26 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_base_key_falls_back_to_full_device_name() {
+        // count == 2 -> instance names "ahu-12-001" and "ahu-12-002" both strip to
+        // the same base_key "ahu-12", which therefore can't be a unique envelope id.
+        // The emitter must fall back to the full device name for the device_key.
+        let mut cfg = config();
+        cfg.instances[0].count = 2;
+        let toml = emit_republisher_config(&cfg, "mqtt.example").unwrap();
+        assert!(
+            toml.contains("device_key = \"ahu-12-001\""),
+            "device_key must fall back to the full name, got:\n{toml}"
+        );
+        assert!(toml.contains("device_key = \"ahu-12-002\""));
+        // The bare (colliding) base_key must NOT be emitted as a device_key.
+        assert!(
+            !toml.contains("device_key = \"ahu-12\""),
+            "collapsing base_key must not be used as device_key when it is shared"
+        );
+    }
+
+    #[test]
     fn emits_sim_config_checksum_that_round_trips_and_detects_drift() {
         use republish_core::config::AppConfig;
 

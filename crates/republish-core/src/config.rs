@@ -828,6 +828,29 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_point_whose_scalar_topic_is_empty() {
+        // Scalar mode validates each enabled point's telemetry topic. A prefix that
+        // survives the non-empty check but normalises to nothing ("#"), paired with
+        // a tag_path that sanitises to nothing ("###"), yields an empty publish
+        // topic -> the per-point map_err error message closure fires.
+        let mut config = AppConfig::default();
+        config.mqtt.payload_format = PayloadFormat::Scalar;
+        config.mqtt.topic_prefix = "#".into();
+        config.points.push(PointConfig {
+            enabled: true,
+            poll_interval_secs: 5,
+            device_key: "dev".into(),
+            tag_path: "###".into(),
+            ..PointConfig::default()
+        });
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("MQTT topic is invalid"),
+            "expected per-point topic error, got: {err}"
+        );
+    }
+
+    #[test]
     fn validate_accepts_scalar_mode_with_enabled_point() {
         // Scalar mode exercises the per-point telemetry-topic validation branch
         // (skipped in envelope mode). A sane point passes.
