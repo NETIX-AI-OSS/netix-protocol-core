@@ -119,4 +119,34 @@ mod tests {
     fn interface_choices_empty_input_yields_no_choices() {
         assert!(interface_choices(&[]).is_empty());
     }
+
+    #[test]
+    fn ipv4_interfaces_enumerates_host_sorted_and_filtered() {
+        // Exercises the real get_if_addrs() enumeration plus the filter/sort/dedup
+        // pipeline. The set depends on host NICs (a minimal container may yield an
+        // empty result once loopback is filtered out), but the enumeration path runs
+        // deterministically and every returned entry must satisfy the invariants.
+        let interfaces = ipv4_interfaces();
+
+        // Sorted by (name, addr): no adjacent pair is out of order.
+        assert!(interfaces.windows(2).all(|pair| {
+            pair[0]
+                .name
+                .cmp(&pair[1].name)
+                .then(pair[0].addr.cmp(&pair[1].addr))
+                != std::cmp::Ordering::Greater
+        }));
+        // Deduped: no exact (name, addr) duplicate survives.
+        assert!(interfaces
+            .windows(2)
+            .all(|pair| !(pair[0].name == pair[1].name && pair[0].addr == pair[1].addr)));
+        // Every retained interface is a valid discovery target (the Some-arm invariant).
+        assert!(interfaces
+            .iter()
+            .all(|interface| is_discovery_interface(&interface.name, interface.addr)));
+
+        // Choices derived from the live enumeration are strictly ascending (sorted+deduped).
+        let choices = interface_choices(&interfaces);
+        assert!(choices.windows(2).all(|pair| pair[0] < pair[1]));
+    }
 }
