@@ -760,4 +760,317 @@ mod tests {
         assert_eq!(loaded.mqtt.device_topic_prefix, "/Netix/Sim/Device");
         assert!(loaded.mqtt.autostart);
     }
+
+    #[test]
+    fn payload_format_display_and_config_token() {
+        // The config token must match the serde snake_case rename exactly so the
+        // simulator emit and the deserialised value never drift.
+        assert_eq!(PayloadFormat::Scalar.as_config_token(), "scalar");
+        assert_eq!(
+            PayloadFormat::NetixEnvelope.as_config_token(),
+            "netix_envelope"
+        );
+        // Human-facing labels for the settings picker.
+        assert_eq!(
+            PayloadFormat::Scalar.to_string(),
+            "Scalar (value per topic)"
+        );
+        assert_eq!(
+            PayloadFormat::NetixEnvelope.to_string(),
+            "Netix envelope (per device)"
+        );
+        // ALL is in menu order.
+        assert_eq!(
+            PayloadFormat::ALL,
+            [PayloadFormat::Scalar, PayloadFormat::NetixEnvelope]
+        );
+    }
+
+    #[test]
+    fn ui_theme_display_and_all() {
+        assert_eq!(UiTheme::Auto.to_string(), "Auto");
+        assert_eq!(UiTheme::Light.to_string(), "Light");
+        assert_eq!(UiTheme::Dark.to_string(), "Dark");
+        assert_eq!(UiTheme::ALL, [UiTheme::Auto, UiTheme::Light, UiTheme::Dark]);
+    }
+
+    #[test]
+    fn validate_rejects_empty_topic_prefix() {
+        let mut config = AppConfig::default();
+        config.mqtt.topic_prefix = "  ".into();
+        assert_eq!(
+            config.validate().unwrap_err(),
+            "MQTT topic prefix cannot be empty"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_empty_device_topic_prefix_in_envelope_mode() {
+        // Default payload_format is NetixEnvelope, so the device prefix is required.
+        let mut config = AppConfig::default();
+        config.mqtt.device_topic_prefix = "   ".into();
+        assert_eq!(
+            config.validate().unwrap_err(),
+            "MQTT device topic prefix cannot be empty"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_invalid_health_topic() {
+        let mut config = AppConfig::default();
+        // A wildcard is illegal in a publish topic; the health topic is validated
+        // verbatim (unlike per-point topics it is not sanitised first).
+        config.mqtt.health_topic = "Netix/Site/#".into();
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .contains("health topic is invalid"));
+    }
+
+    #[test]
+    fn validate_accepts_scalar_mode_with_enabled_point() {
+        // Scalar mode exercises the per-point telemetry-topic validation branch
+        // (skipped in envelope mode). A sane point passes.
+        let mut config = AppConfig::default();
+        config.mqtt.payload_format = PayloadFormat::Scalar;
+        config.points.push(PointConfig {
+            enabled: true,
+            poll_interval_secs: 5,
+            device_key: "dev".into(),
+            tag_path: "dev/temp".into(),
+            ..PointConfig::default()
+        });
+        assert!(config.validate().is_ok(), "{:?}", config.validate());
+
+        // A disabled point with a zero poll interval is ignored (branch: !enabled).
+        config.points.push(PointConfig {
+            enabled: false,
+            poll_interval_secs: 0,
+            ..PointConfig::default()
+        });
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn resolve_password_env_no_var_or_blank_var_is_noop() {
+        // password_env unset -> nothing to resolve.
+        let mut mqtt = MqttConfig::default();
+        assert!(!mqtt.resolve_password_env());
+        assert_eq!(mqtt.password, None);
+
+        // password_env present but blank -> treated as unset.
+        let mut mqtt = MqttConfig {
+            password_env: Some("   ".into()),
+            ..MqttConfig::default()
+        };
+        assert!(!mqtt.resolve_password_env());
+        assert_eq!(mqtt.password, None);
+
+        // password_env names a var that is set but empty -> not resolved.
+        let var = "REPUBLISH_CORE_TEST_PW_ENV_EMPTY_C3D4";
+        std::env::set_var(var, "");
+        let mut mqtt = MqttConfig {
+            password_env: Some(var.into()),
+            ..MqttConfig::default()
+        };
+        let resolved = mqtt.resolve_password_env();
+        std::env::remove_var(var);
+        assert!(!resolved);
+        assert_eq!(mqtt.password, None);
+    }
+
+    #[test]
+    fn migrate_leaves_non_default_and_current_configs_untouched() {
+        // A non-default legacy bacnet port must survive migration verbatim.
+        let mut config = AppConfig {
+            version: 1,
+            ..AppConfig::default()
+        };
+        config.connections.insert("bacnet".into(), {
+            let mut conn = Addressing::new();
+            conn.insert("port".into(), serde_json::json!(502));
+            conn
+        });
+        config.migrate();
+        assert_eq!(
+            config.connections["bacnet"].get("port"),
+            Some(&serde_json::json!(502)),
+            "a non-default port is not a legacy default and must be left alone"
+        );
+
+        // A v1 bacnet connection with the port key absent defaults to 47808 and is
+        // rewritten to the sentinel 0.
+        let mut config = AppConfig {
+            version: 1,
+            ..AppConfig::default()
+        };
+        config
+            .connections
+            .insert("bacnet".into(), Addressing::new());
+        config.migrate();
+        assert_eq!(
+            config.connections["bacnet"].get("port"),
+            Some(&serde_json::json!(0))
+        );
+
+        // Already-current version: migrate only stamps the version, no rewrites.
+        let mut config = AppConfig::default();
+        config.connections.insert("bacnet".into(), {
+            let mut conn = Addressing::new();
+            conn.insert("port".into(), serde_json::json!(47808));
+            conn
+        });
+        config.migrate();
+        assert_eq!(config.version, CURRENT_CONFIG_VERSION);
+        assert_eq!(
+            config.connections["bacnet"].get("port"),
+            Some(&serde_json::json!(47808)),
+            "at the current version the legacy rewrite must not run"
+        );
+
+        // A v1 config with no bacnet connection at all: nothing to rewrite.
+        let mut config = AppConfig {
+            version: 1,
+            ..AppConfig::default()
+        };
+        config.migrate();
+        assert_eq!(config.version, CURRENT_CONFIG_VERSION);
+        assert!(config.connections.is_empty());
+    }
+
+    #[test]
+    fn load_from_path_surfaces_read_and_parse_errors() {
+        // Missing file -> read error with a path-bearing context.
+        let missing = std::path::Path::new("/nonexistent/republish-core/does-not-exist.toml");
+        let err = load_from_path(missing).unwrap_err();
+        assert!(format!("{err:#}").contains("failed to read"));
+
+        // Present but malformed TOML -> parse error.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        fs::write(&path, "this is = = not valid toml {{{").unwrap();
+        let err = load_from_path(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("failed to parse"));
+    }
+
+    #[test]
+    fn load_defaults_version_and_resolves_env_on_load() {
+        // A file omitting `version` deserialises via the serde default
+        // (current_version) and is then migrated to the current version.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        let var = "REPUBLISH_CORE_TEST_PW_ENV_LOAD_E5F6";
+        std::env::set_var(var, "loaded-from-env");
+        fs::write(
+            &path,
+            format!(
+                "[mqtt]\npassword_env = \"{var}\"\npassword = \"stale\"\n"
+            ),
+        )
+        .unwrap();
+        let loaded = load_from_path(&path);
+        std::env::remove_var(var);
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.version, CURRENT_CONFIG_VERSION);
+        // Env indirection wins over the stale on-disk password at load time.
+        assert_eq!(loaded.mqtt.password.as_deref(), Some("loaded-from-env"));
+    }
+
+    #[test]
+    fn save_then_load_preserves_remembered_plaintext_secret() {
+        // remember_secrets = true keeps the plaintext secret through a save/load
+        // (both save and load emit the plaintext warning path).
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        let config = AppConfig {
+            mqtt: MqttConfig {
+                remember_secrets: true,
+                password: Some("kept-plain".into()),
+                client_key_passphrase: Some("kept-phrase".into()),
+                ..MqttConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        save_to_path(&path, &config).unwrap();
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("kept-plain"));
+        let loaded = load_from_path(&path).unwrap();
+        assert_eq!(loaded.mqtt.password.as_deref(), Some("kept-plain"));
+        assert_eq!(
+            loaded.mqtt.client_key_passphrase.as_deref(),
+            Some("kept-phrase")
+        );
+    }
+
+    #[test]
+    fn save_creates_missing_parent_directory() {
+        // save_to_path creates the parent dir chain on demand.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("a").join("b").join("config.toml");
+        assert!(!path.parent().unwrap().exists());
+        save_to_path(&path, &AppConfig::default()).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn save_errors_when_parent_cannot_be_created() {
+        // A regular file standing where a parent directory should be makes
+        // create_dir_all fail, surfacing the path-bearing context.
+        let temp = tempfile::tempdir().unwrap();
+        let blocker = temp.path().join("blocker");
+        fs::write(&blocker, "not a directory").unwrap();
+        let path = blocker.join("config.toml");
+        let err = save_to_path(&path, &AppConfig::default()).unwrap_err();
+        assert!(format!("{err:#}").contains("failed to create"));
+    }
+
+    #[test]
+    fn config_path_and_load_or_default_via_xdg() {
+        // config_path()/load_or_default() resolve a real OS config dir; pin it to a
+        // temp dir via XDG_CONFIG_HOME so the three load_or_default branches are
+        // deterministic. XDG_CONFIG_HOME is process-global, so all assertions live
+        // in this single serial test.
+        let temp = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", temp.path());
+
+        let path = config_path().expect("config path resolves under XDG_CONFIG_HOME");
+        assert!(path.ends_with("republisher/config.toml"), "got {path:?}");
+        assert!(path.starts_with(temp.path()));
+
+        // No file yet -> defaults with the "using default configuration" message.
+        // (Full equality can't be used: a fresh default mints a random client_id.)
+        let (config, reported, message) = load_or_default();
+        assert_eq!(config.protocol, "");
+        assert!(config.points.is_empty());
+        assert_eq!(config.version, CURRENT_CONFIG_VERSION);
+        assert_eq!(reported, path);
+        assert_eq!(message, "Using default configuration");
+
+        // A valid saved file -> loaded, "Loaded saved configuration".
+        let saved = AppConfig {
+            protocol: "modbus".into(),
+            ..AppConfig::default()
+        };
+        save_to_path(&path, &saved).unwrap();
+        let (config, _, message) = load_or_default();
+        assert_eq!(config.protocol, "modbus");
+        assert_eq!(message, "Loaded saved configuration");
+
+        // A malformed file that exists -> defaults, "config load failed".
+        fs::write(&path, "= = broken").unwrap();
+        let (config, _, message) = load_or_default();
+        assert_eq!(config.protocol, "");
+        assert!(config.points.is_empty());
+        assert!(
+            message.contains("config load failed"),
+            "got message: {message}"
+        );
+
+        // Restore the prior environment.
+        match prev {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
 }
