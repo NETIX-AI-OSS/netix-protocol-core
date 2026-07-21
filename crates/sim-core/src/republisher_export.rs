@@ -17,11 +17,9 @@
 use std::collections::HashMap;
 
 use proto_api::base_key;
+use republish_core::defaults;
 
 use crate::config::{ConfigError, SimulatorConfig};
-
-/// Default per-point poll cadence written into the emitted config.
-const POLL_INTERVAL_SECS: u64 = 30;
 
 /// Minimal TOML basic-string escaping for the identifiers we emit.
 fn toml_escape(value: &str) -> String {
@@ -65,18 +63,34 @@ pub fn emit_republisher_config(
     out.push_str("device_backoff_max_secs = 300\n");
     out.push_str("bind_failure_policy = \"skip\"\n\n");
 
+    // Every value below comes from the SAME shared defaults the config struct
+    // uses (`republish_core::defaults`), so the emitted config can never diverge
+    // from the built-in struct defaults.
     out.push_str("[mqtt]\n");
     out.push_str(&format!("host = \"{}\"\n", toml_escape(mqtt_host)));
-    out.push_str("port = 8883\n");
-    out.push_str("use_tls = true\n");
-    out.push_str("client_id = \"netix-republisher\"\n");
+    out.push_str(&format!("port = {}\n", defaults::MQTT_PORT));
+    out.push_str(&format!("use_tls = {}\n", defaults::USE_TLS));
+    // Per-instance-unique id so two republishers can't kick each other off the broker.
+    out.push_str(&format!(
+        "client_id = \"{}\"\n",
+        toml_escape(&defaults::generate_client_id())
+    ));
     out.push_str("topic_prefix = \"Netix/Site\"\n");
     out.push_str("health_topic = \"Netix/Site/_health/republisher\"\n");
-    out.push_str("payload_format = \"netix_envelope\"\n");
-    out.push_str("device_topic_prefix = \"/Netix/Sim/Device\"\n");
+    out.push_str(&format!(
+        "payload_format = \"{}\"\n",
+        defaults::PAYLOAD_FORMAT.as_config_token()
+    ));
+    out.push_str(&format!(
+        "device_topic_prefix = \"{}\"\n",
+        toml_escape(defaults::DEVICE_TOPIC_PREFIX)
+    ));
     out.push_str("retain = false\n");
-    out.push_str("keep_alive_secs = 30\n");
-    out.push_str("autostart = true\n\n");
+    out.push_str(&format!(
+        "keep_alive_secs = {}\n",
+        defaults::KEEP_ALIVE_SECS
+    ));
+    out.push_str(&format!("autostart = {}\n\n", defaults::AUTOSTART));
 
     out.push_str(&format!(
         "# {point_total} points across {} devices.\n\n",
@@ -95,7 +109,10 @@ pub fn emit_republisher_config(
             out.push_str("enabled = true\n");
             out.push_str(&format!("device_key = \"{}\"\n", toml_escape(&device_key)));
             out.push_str(&format!("tag_path = \"{}\"\n", toml_escape(&point.label)));
-            out.push_str(&format!("poll_interval_secs = {POLL_INTERVAL_SECS}\n\n"));
+            out.push_str(&format!(
+                "poll_interval_secs = {}\n\n",
+                defaults::POLL_INTERVAL_SECS
+            ));
             out.push_str("[points.addressing]\n");
             out.push_str(&format!("device_instance = {}\n", device.device_id));
             out.push_str(&format!(
@@ -186,6 +203,20 @@ mod tests {
         assert!(toml.contains("payload_format = \"netix_envelope\""));
         assert!(toml.contains("device_topic_prefix = \"/Netix/Sim/Device\""));
         assert!(toml.contains("host = \"mqtt.example\""));
+        // Emitted MQTT settings come from the shared defaults, so they match the
+        // config struct defaults exactly (no emit-vs-struct divergence).
+        assert!(toml.contains(&format!("port = {}", defaults::MQTT_PORT)));
+        assert!(toml.contains(&format!("use_tls = {}", defaults::USE_TLS)));
+        assert!(toml.contains(&format!("keep_alive_secs = {}", defaults::KEEP_ALIVE_SECS)));
+        assert!(toml.contains(&format!(
+            "poll_interval_secs = {}",
+            defaults::POLL_INTERVAL_SECS
+        )));
+        // autostart defaults OFF (safety) — the operator starts deliberately.
+        assert!(toml.contains(&format!("autostart = {}", defaults::AUTOSTART)));
+        // Per-instance-unique, prefixed client id (not the old shared constant).
+        assert!(toml.contains(&format!("client_id = \"{}", defaults::CLIENT_ID_PREFIX)));
+        assert!(!toml.contains("client_id = \"netix-republisher\""));
         // count==1 instance -> device_key is the bare tag_identifier.
         assert!(toml.contains("device_key = \"ahu-12\""));
         assert!(toml.contains("tag_path = \"discharge-air-temp\""));

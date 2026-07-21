@@ -4425,6 +4425,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "uuid",
 ]
 
 [[package]]
@@ -4896,6 +4897,7 @@ dependencies = [
  "proto-api",
  "rand 0.8.6",
  "ratatui",
+ "republish-core",
  "serde",
  "serde_yaml",
  "tokio",

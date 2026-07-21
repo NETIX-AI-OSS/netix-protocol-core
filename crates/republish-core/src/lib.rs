@@ -7,6 +7,7 @@
 #[cfg(feature = "gui")]
 pub mod app;
 pub mod config;
+pub mod defaults;
 pub mod import;
 pub mod log;
 pub mod model;
@@ -18,7 +19,7 @@ pub mod topic;
 pub mod ui;
 pub mod worker;
 
-pub use config::{AppConfig, MqttConfig, UiPreferences, UiTheme};
+pub use config::{AppConfig, MqttConfig, PayloadFormat, UiPreferences, UiTheme};
 pub use model::{
     DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig, PointFailure, PointSample,
     PointStatus, PollOutcome, PublishStats, TelemetryValue,

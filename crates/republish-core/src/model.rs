@@ -288,7 +288,7 @@ pub fn default_true() -> bool {
 }
 
 pub fn default_poll_interval_secs() -> u64 {
-    10
+    crate::defaults::POLL_INTERVAL_SECS
 }
 
 #[cfg(test)]

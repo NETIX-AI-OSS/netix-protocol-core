@@ -84,17 +84,28 @@ pub struct MqttConfig {
 pub enum PayloadFormat {
     /// One message per point: the bare JSON scalar value, on the point's tag
     /// topic (`<topic_prefix>/<tag_path>`).
-    #[default]
     Scalar,
     /// One message per device: a `{reason,time,id,points:[{pointName,data,status}]}`
     /// envelope on `<device_topic_prefix>/<id>/telemetry`, where `id` is the
-    /// point's `device_key` and `pointName` is its `tag_path`.
+    /// point's `device_key` and `pointName` is its `tag_path`. This is the
+    /// pipeline default (see [`crate::defaults::PAYLOAD_FORMAT`]).
+    #[default]
     NetixEnvelope,
 }
 
 impl PayloadFormat {
     /// All variants, in menu order, for the settings picker.
     pub const ALL: [Self; 2] = [Self::Scalar, Self::NetixEnvelope];
+
+    /// The config/TOML token for this format (matches the serde `snake_case`
+    /// rename). Used by the simulator's emit so the emitted string and the
+    /// deserialised value can never drift apart.
+    pub fn as_config_token(&self) -> &'static str {
+        match self {
+            Self::Scalar => "scalar",
+            Self::NetixEnvelope => "netix_envelope",
+        }
+    }
 }
 
 impl std::fmt::Display for PayloadFormat {
@@ -247,7 +258,7 @@ impl Default for MqttConfig {
         Self {
             host: default_mqtt_host(),
             port: default_mqtt_port(),
-            use_tls: true,
+            use_tls: crate::defaults::USE_TLS,
             client_id: default_client_id(),
             topic_prefix: default_topic_prefix(),
             health_topic: default_health_topic(),
@@ -260,9 +271,9 @@ impl Default for MqttConfig {
             remember_secrets: false,
             retain: false,
             keep_alive_secs: default_keep_alive_secs(),
-            payload_format: PayloadFormat::default(),
+            payload_format: crate::defaults::PAYLOAD_FORMAT,
             device_topic_prefix: default_device_topic_prefix(),
-            autostart: false,
+            autostart: crate::defaults::AUTOSTART,
         }
     }
 }
@@ -336,11 +347,11 @@ fn default_mqtt_host() -> String {
 }
 
 fn default_mqtt_port() -> u16 {
-    8883
+    crate::defaults::MQTT_PORT
 }
 
 fn default_client_id() -> String {
-    "netix-republisher".to_string()
+    crate::defaults::generate_client_id()
 }
 
 fn default_topic_prefix() -> String {
@@ -352,11 +363,11 @@ fn default_health_topic() -> String {
 }
 
 fn default_device_topic_prefix() -> String {
-    "/Netix/Sim/Device".to_string()
+    crate::defaults::DEVICE_TOPIC_PREFIX.to_string()
 }
 
 fn default_keep_alive_secs() -> u64 {
-    30
+    crate::defaults::KEEP_ALIVE_SECS
 }
 
 fn default_ui_theme() -> UiTheme {
@@ -465,9 +476,25 @@ mod tests {
     }
 
     #[test]
-    fn payload_format_defaults_scalar_and_envelope_round_trips() {
-        // Default stays scalar so existing configs are unaffected.
-        assert_eq!(MqttConfig::default().payload_format, PayloadFormat::Scalar);
+    fn payload_format_defaults_envelope_and_round_trips() {
+        // Default is the Netix envelope so a hand/GUI config matches the pipeline
+        // (and the simulator emit) without extra tweaking — one source of truth.
+        assert_eq!(
+            MqttConfig::default().payload_format,
+            PayloadFormat::NetixEnvelope
+        );
+        // Pipeline-correct defaults are the safe/right ones out of the box.
+        assert_eq!(MqttConfig::default().port, crate::defaults::MQTT_PORT);
+        assert!(MqttConfig::default().use_tls);
+        assert!(!MqttConfig::default().autostart);
+        // Each default config gets a unique, prefixed client id (no broker thrash).
+        assert!(MqttConfig::default()
+            .client_id
+            .starts_with(crate::defaults::CLIENT_ID_PREFIX));
+        assert_ne!(
+            MqttConfig::default().client_id,
+            MqttConfig::default().client_id
+        );
 
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.toml");
