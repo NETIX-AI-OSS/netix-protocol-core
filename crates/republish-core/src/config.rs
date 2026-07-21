@@ -51,6 +51,13 @@ pub struct MqttConfig {
     pub username: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
+    /// Name of an environment variable that holds the MQTT password. When set
+    /// and the variable is present at load time, the password is read from the
+    /// environment (env wins) and the secret itself is **never** written to the
+    /// config file — only this variable *name* is persisted. This is the
+    /// supported way to keep the broker secret out of plaintext on disk.
+    #[serde(default)]
+    pub password_env: Option<String>,
     #[serde(default)]
     pub ca_cert_path: Option<String>,
     #[serde(default)]
@@ -253,6 +260,47 @@ impl AppConfig {
     }
 }
 
+impl MqttConfig {
+    /// If [`password_env`](Self::password_env) names an environment variable
+    /// that is set (and non-empty), populate [`password`](Self::password) from
+    /// it. The secret is taken from the process environment at load time and is
+    /// never written back to disk (env wins; the file stores only the variable
+    /// *name*). Returns `true` if a password was resolved from the environment.
+    pub fn resolve_password_env(&mut self) -> bool {
+        let Some(var) = self.password_env.as_deref().map(str::trim) else {
+            return false;
+        };
+        if var.is_empty() {
+            return false;
+        }
+        match std::env::var(var) {
+            Ok(value) if !value.trim().is_empty() => {
+                self.password = Some(value);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A warning message when a plaintext MQTT secret is (or is about to be) written
+/// to the config file — i.e. `remember_secrets = true` and a password or client
+/// key passphrase is present. Returns `None` when no plaintext secret is being
+/// persisted. Callers log this at save and load time so operators are told to
+/// prefer `password_env` (env indirection) over on-disk plaintext.
+pub fn plaintext_secret_warning(mqtt: &MqttConfig) -> Option<String> {
+    let non_empty = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.trim().is_empty());
+    let persists_plaintext =
+        mqtt.remember_secrets && (non_empty(&mqtt.password) || non_empty(&mqtt.client_key_passphrase));
+    persists_plaintext.then(|| {
+        "MQTT secret(s) are stored in PLAINTEXT in the config file \
+         (remember_secrets = true). Prefer `password_env` to load the MQTT \
+         password from an environment variable so the secret is never written \
+         to disk."
+            .to_string()
+    })
+}
+
 impl Default for MqttConfig {
     fn default() -> Self {
         Self {
@@ -264,6 +312,7 @@ impl Default for MqttConfig {
             health_topic: default_health_topic(),
             username: None,
             password: None,
+            password_env: None,
             ca_cert_path: None,
             client_cert_path: None,
             client_key_path: None,
@@ -325,6 +374,13 @@ pub fn load_from_path(path: &Path) -> Result<AppConfig> {
     let mut config: AppConfig =
         toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))?;
     config.migrate();
+    // A plaintext secret in the loaded file: warn (it should not be on disk).
+    if let Some(message) = plaintext_secret_warning(&config.mqtt) {
+        log::warn!("{message}");
+    }
+    // Env indirection wins over anything on disk: if `password_env` names a set
+    // variable, the password comes from the environment, not the file.
+    config.mqtt.resolve_password_env();
     Ok(config)
 }
 
@@ -332,6 +388,10 @@ pub fn save_to_path(path: &Path, config: &AppConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    // Persisting a plaintext secret: warn and point at the env-var alternative.
+    if let Some(message) = plaintext_secret_warning(&config.mqtt) {
+        log::warn!("{message}");
     }
     let raw =
         toml::to_string_pretty(&config.sanitized_for_save()).context("failed to encode config")?;
@@ -389,6 +449,91 @@ mod tests {
             config.sanitized_for_save().mqtt.password.as_deref(),
             Some("secret")
         );
+    }
+
+    #[test]
+    fn password_env_resolves_secret_from_environment() {
+        // Unique var name so the process-global env mutation can't race other tests.
+        let var = "REPUBLISH_CORE_TEST_PW_ENV_A1B2";
+        std::env::set_var(var, "s3cr3t-from-env");
+
+        let mut mqtt = MqttConfig {
+            password_env: Some(var.to_string()),
+            // A stale plaintext value on disk must lose to the environment.
+            password: Some("stale-on-disk".to_string()),
+            ..MqttConfig::default()
+        };
+        let resolved = mqtt.resolve_password_env();
+        std::env::remove_var(var);
+
+        assert!(resolved, "env-named password should resolve");
+        assert_eq!(mqtt.password.as_deref(), Some("s3cr3t-from-env"));
+
+        // No env var present -> nothing resolved, existing password untouched.
+        let mut mqtt = MqttConfig {
+            password_env: Some(var.to_string()),
+            password: Some("keep-me".to_string()),
+            ..MqttConfig::default()
+        };
+        assert!(!mqtt.resolve_password_env());
+        assert_eq!(mqtt.password.as_deref(), Some("keep-me"));
+
+        // The env-var name is safe to persist (it is not the secret itself),
+        // and the resolved secret is stripped from a save with remember_secrets off.
+        let config = AppConfig {
+            mqtt: MqttConfig {
+                password_env: Some(var.to_string()),
+                password: Some("resolved-secret".to_string()),
+                remember_secrets: false,
+                ..MqttConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        let saved = config.sanitized_for_save();
+        assert_eq!(
+            saved.mqtt.password_env.as_deref(),
+            Some(var),
+            "password_env name is persisted"
+        );
+        assert_eq!(
+            saved.mqtt.password, None,
+            "the secret itself is not persisted"
+        );
+    }
+
+    #[test]
+    fn plaintext_persist_emits_warning() {
+        // remember_secrets + a password => a plaintext secret hits disk => warn.
+        let mut mqtt = MqttConfig {
+            remember_secrets: true,
+            password: Some("plaintext".into()),
+            ..MqttConfig::default()
+        };
+        assert!(
+            plaintext_secret_warning(&mqtt)
+                .unwrap()
+                .contains("PLAINTEXT"),
+            "plaintext persist should produce a warning recommending password_env"
+        );
+        assert!(plaintext_secret_warning(&mqtt)
+            .unwrap()
+            .contains("password_env"));
+
+        // A client key passphrase is likewise a plaintext secret.
+        mqtt.password = None;
+        mqtt.client_key_passphrase = Some("phrase".into());
+        assert!(plaintext_secret_warning(&mqtt).is_some());
+
+        // remember_secrets off => secrets are stripped on save => no warning.
+        mqtt.remember_secrets = false;
+        assert!(plaintext_secret_warning(&mqtt).is_none());
+
+        // No secret set => nothing to warn about even with remember_secrets on.
+        let clean = MqttConfig {
+            remember_secrets: true,
+            ..MqttConfig::default()
+        };
+        assert!(plaintext_secret_warning(&clean).is_none());
     }
 
     #[test]
