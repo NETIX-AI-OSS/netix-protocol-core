@@ -706,8 +706,9 @@ pub fn spawn_republisher(
                 if !points.iter().any(|p| p.enabled) {
                     let message = no_points_message(discover_on_start, discovery_supported);
                     log(&sender, LogLevel::Warning, message.clone());
-                    let _ = sender
-                        .send(WorkerEvent::Lifecycle(RepublisherLifecycle::Failed(message)));
+                    let _ = sender.send(WorkerEvent::Lifecycle(RepublisherLifecycle::Failed(
+                        message,
+                    )));
                     return;
                 }
             }
@@ -1177,7 +1178,10 @@ mod tests {
     fn no_points_message_wording_is_stable() {
         // The false/no-discover message matches the RCA-specified wording exactly.
         let off = no_points_message(false, true);
-        assert!(off.contains("no enabled points and discover_on_start=false"), "{off}");
+        assert!(
+            off.contains("no enabled points and discover_on_start=false"),
+            "{off}"
+        );
 
         assert!(no_points_message(true, false).contains("does not support discovery"));
         assert!(no_points_message(true, true).contains("found no pollable points"));

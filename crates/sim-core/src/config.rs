@@ -132,7 +132,9 @@ impl SimulatorConfig {
     /// republisher config, and the value to compare a loaded config against to
     /// detect drift (see `republish_core::config::AppConfig::check_sim_config_drift`).
     pub fn checksum(&self) -> Result<String, ConfigError> {
-        Ok(republish_core::checksum::sha256_hex(&self.canonical_bytes()?))
+        Ok(republish_core::checksum::sha256_hex(
+            &self.canonical_bytes()?,
+        ))
     }
 }
 

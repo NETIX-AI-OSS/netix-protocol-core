@@ -67,6 +67,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::assertions_on_constants,
+        reason = "these assert the pipeline-correct values of the shared Defaults constants"
+    )]
     fn pipeline_defaults_are_envelope_ready() {
         assert_eq!(PAYLOAD_FORMAT, PayloadFormat::NetixEnvelope);
         assert!(USE_TLS);

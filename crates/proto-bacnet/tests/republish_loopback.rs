@@ -29,7 +29,9 @@ const DEVICE_INSTANCE: u32 = 1100;
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
-    SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn sim_config() -> SimulatorConfig {
@@ -250,7 +252,10 @@ async fn discover_on_start_builds_identity_faithful_points_and_polls() {
         .iter()
         .find(|p| p.addressing.get("object_type").and_then(|v| v.as_str()) == Some("analog_input"))
         .unwrap_or_else(|| panic!("expected an analog_input point, got {points:?}"));
-    assert_eq!(temp.tag_path, "temp", "tag path should be the point label/role");
+    assert_eq!(
+        temp.tag_path, "temp",
+        "tag path should be the point label/role"
+    );
 
     // The built points resolve and poll to the simulated value, so they are ready
     // for the publish path the worker drives.

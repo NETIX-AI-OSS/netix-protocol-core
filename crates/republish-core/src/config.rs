@@ -341,8 +341,8 @@ impl MqttConfig {
 /// prefer `password_env` (env indirection) over on-disk plaintext.
 pub fn plaintext_secret_warning(mqtt: &MqttConfig) -> Option<String> {
     let non_empty = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.trim().is_empty());
-    let persists_plaintext =
-        mqtt.remember_secrets && (non_empty(&mqtt.password) || non_empty(&mqtt.client_key_passphrase));
+    let persists_plaintext = mqtt.remember_secrets
+        && (non_empty(&mqtt.password) || non_empty(&mqtt.client_key_passphrase));
     persists_plaintext.then(|| {
         "MQTT secret(s) are stored in PLAINTEXT in the config file \
          (remember_secrets = true). Prefer `password_env` to load the MQTT \
