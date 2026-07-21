@@ -1122,13 +1122,12 @@ mod tests {
 
         record_unresolved_failures(&tx, &points, &unresolved, &mut status);
 
-        match rx.try_recv().unwrap() {
-            WorkerEvent::Failures(failures) => {
-                assert_eq!(failures.len(), 1);
-                assert!(failures[0].error.contains("not in I-Am cache"));
-            }
-            other => panic!("expected Failures, got {other:?}"),
-        }
+        let event = rx.try_recv().unwrap();
+        assert!(
+            matches!(&event, WorkerEvent::Failures(failures)
+                if failures.len() == 1 && failures[0].error.contains("not in I-Am cache")),
+            "got {event:?}"
+        );
         let identity = PointIdentity::from_point(&points[0]);
         assert_eq!(status.get(&identity).unwrap().consecutive_failures, 1);
     }

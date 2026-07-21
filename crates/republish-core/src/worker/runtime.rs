@@ -65,16 +65,15 @@ mod tests {
         });
         assert!(!completed);
         let event = receiver.try_recv().unwrap();
-        match event {
-            WorkerEvent::Log(LogLevel::Error, message) => {
-                assert!(message.contains("boom"));
-            }
-            other => panic!("expected error log, got {other:?}"),
-        }
-        match receiver.try_recv().unwrap() {
-            WorkerEvent::Finished(message) => assert!(message.contains("unexpectedly")),
-            other => panic!("expected Finished, got {other:?}"),
-        }
+        assert!(
+            matches!(&event, WorkerEvent::Log(LogLevel::Error, message) if message.contains("boom")),
+            "got {event:?}"
+        );
+        let finished = receiver.try_recv().unwrap();
+        assert!(
+            matches!(&finished, WorkerEvent::Finished(message) if message.contains("unexpectedly")),
+            "got {finished:?}"
+        );
     }
 
     #[test]
@@ -113,9 +112,10 @@ mod tests {
             std::panic::panic_any(String::from("string boom"));
         });
         assert!(!completed);
-        match receiver.try_recv().unwrap() {
-            WorkerEvent::Log(LogLevel::Error, message) => assert!(message.contains("string boom")),
-            other => panic!("expected error log, got {other:?}"),
-        }
+        let event = receiver.try_recv().unwrap();
+        assert!(
+            matches!(&event, WorkerEvent::Log(LogLevel::Error, message) if message.contains("string boom")),
+            "got {event:?}"
+        );
     }
 }

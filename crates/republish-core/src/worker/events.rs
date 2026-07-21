@@ -79,10 +79,11 @@ mod tests {
             .sender
             .send(WorkerEvent::Finished("done".into()))
             .unwrap();
-        match channel.receiver.try_recv().unwrap() {
-            WorkerEvent::Finished(message) => assert_eq!(message, "done"),
-            other => panic!("expected Finished, got {other:?}"),
-        }
+        let event = channel.receiver.try_recv().unwrap();
+        assert!(
+            matches!(&event, WorkerEvent::Finished(message) if message == "done"),
+            "got {event:?}"
+        );
     }
 
     #[test]
@@ -96,9 +97,10 @@ mod tests {
     fn log_helper_sends_log_event() {
         let channel = WorkerChannel::new();
         log(&channel.sender, LogLevel::Warning, "careful");
-        match channel.receiver.try_recv().unwrap() {
-            WorkerEvent::Log(LogLevel::Warning, message) => assert_eq!(message, "careful"),
-            other => panic!("expected Log, got {other:?}"),
-        }
+        let event = channel.receiver.try_recv().unwrap();
+        assert!(
+            matches!(&event, WorkerEvent::Log(LogLevel::Warning, message) if message == "careful"),
+            "got {event:?}"
+        );
     }
 }
