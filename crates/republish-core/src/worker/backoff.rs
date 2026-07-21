@@ -132,4 +132,115 @@ mod tests {
         );
         assert!(!backoffs.contains_key(&100));
     }
+
+    fn failure_outcome(device: u32) -> PollOutcome {
+        PollOutcome {
+            failures: vec![crate::model::PointFailure {
+                point: point_on_device(device),
+                error: "timeout".into(),
+            }],
+            ..PollOutcome::default()
+        }
+    }
+
+    #[test]
+    fn backoff_doubles_then_clamps_at_max_delay() {
+        let now = Instant::now();
+        let mut backoffs = HashMap::new();
+        let polled = HashSet::from([7u32]);
+        let max = Duration::from_secs(15);
+
+        // First failure: no prior backoff -> initial (clamped to max if smaller).
+        let messages = update_device_backoffs(
+            &mut backoffs,
+            &polled,
+            &failure_outcome(7),
+            now,
+            max,
+            device_instance,
+        );
+        assert_eq!(backoffs.get(&7).unwrap().delay, DEVICE_BACKOFF_INITIAL);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].0, LogLevel::Warning);
+        assert!(messages[0].1.contains("all reads failed"));
+        assert_eq!(backoffs.get(&7).unwrap().until, now + DEVICE_BACKOFF_INITIAL);
+
+        // Second failure: 10s * 2 = 20s, clamped down to the 15s max.
+        update_device_backoffs(
+            &mut backoffs,
+            &polled,
+            &failure_outcome(7),
+            now,
+            max,
+            device_instance,
+        );
+        assert_eq!(backoffs.get(&7).unwrap().delay, max);
+    }
+
+    #[test]
+    fn clear_message_emitted_when_device_recovers() {
+        let now = Instant::now();
+        let mut backoffs = HashMap::new();
+        let polled = HashSet::from([9u32]);
+        update_device_backoffs(
+            &mut backoffs,
+            &polled,
+            &failure_outcome(9),
+            now,
+            Duration::from_secs(300),
+            device_instance,
+        );
+        let ok = PollOutcome {
+            samples: vec![crate::model::PointSample {
+                point: point_on_device(9),
+                value: crate::model::TelemetryValue::Number(1.0),
+                topic: String::new(),
+                timestamp_ms: 0,
+            }],
+            ..PollOutcome::default()
+        };
+        let messages = update_device_backoffs(
+            &mut backoffs,
+            &polled,
+            &ok,
+            now,
+            Duration::from_secs(300),
+            device_instance,
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].0, LogLevel::Info);
+        assert!(messages[0].1.contains("backoff cleared"));
+    }
+
+    #[test]
+    fn device_without_numeric_instance_is_ignored() {
+        // A non-numeric device_instance resolves to None, so the point neither
+        // clears nor escalates a backoff.
+        let now = Instant::now();
+        let mut backoffs = HashMap::new();
+        let mut addressing = Addressing::new();
+        addressing.insert("device_instance".into(), serde_json::json!("not-a-number"));
+        let point = PointConfig {
+            addressing,
+            ..PointConfig::default()
+        };
+        let outcome = PollOutcome {
+            failures: vec![crate::model::PointFailure {
+                point,
+                error: "x".into(),
+            }],
+            ..PollOutcome::default()
+        };
+        // The unresolved device is not in polled_devices, so nothing happens.
+        let messages = update_device_backoffs(
+            &mut backoffs,
+            &HashSet::new(),
+            &outcome,
+            now,
+            Duration::from_secs(300),
+            device_instance,
+        );
+        assert!(messages.is_empty());
+        assert!(backoffs.is_empty());
+    }
 }

@@ -76,4 +76,46 @@ mod tests {
             other => panic!("expected Finished, got {other:?}"),
         }
     }
+
+    #[test]
+    fn run_async_returns_true_and_stays_quiet_on_success() {
+        let (sender, receiver) = unbounded();
+        let completed = run_async(sender, async {});
+        assert!(completed);
+        // A clean run emits no events.
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn panic_message_extracts_str_payload() {
+        let payload: &str = "static message";
+        assert_eq!(panic_message(&payload), "static message");
+    }
+
+    #[test]
+    fn panic_message_extracts_string_payload() {
+        let payload: String = "owned message".to_string();
+        assert_eq!(panic_message(&payload), "owned message");
+    }
+
+    #[test]
+    fn panic_message_falls_back_for_unknown_payload() {
+        // A payload that is neither &str nor String yields the generic label.
+        assert_eq!(panic_message(&42_u64), "unknown panic");
+    }
+
+    #[test]
+    fn run_async_reports_non_str_panic_payload() {
+        // Panicking with a String payload exercises the String branch of
+        // panic_message end-to-end.
+        let (sender, receiver) = unbounded();
+        let completed = run_async(sender, async {
+            std::panic::panic_any(String::from("string boom"));
+        });
+        assert!(!completed);
+        match receiver.try_recv().unwrap() {
+            WorkerEvent::Log(LogLevel::Error, message) => assert!(message.contains("string boom")),
+            other => panic!("expected error log, got {other:?}"),
+        }
+    }
 }
