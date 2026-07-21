@@ -395,6 +395,60 @@ mod tests {
     }
 
     #[test]
+    fn addressing_summary_is_sorted_key_value_pairs() {
+        let cfg = point(
+            "dev",
+            &[
+                ("object_type", serde_json::json!("analogInput")),
+                ("object_instance", serde_json::json!(3)),
+                ("device_instance", serde_json::json!(12)),
+            ],
+        );
+        // Addressing iterates in sorted key order; strings render without quotes.
+        assert_eq!(
+            cfg.addressing_summary(),
+            "device_instance=12 object_instance=3 object_type=analogInput"
+        );
+    }
+
+    #[test]
+    fn display_name_uses_device_key_when_present() {
+        let cfg = point("ahu-12", &[("object_instance", serde_json::json!(3))]);
+        assert_eq!(cfg.display_name(), "ahu-12 [object_instance=3]");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_placeholder_when_key_blank_or_whitespace() {
+        // Empty device_key -> "(device)" placeholder.
+        let blank = point("", &[("object_instance", serde_json::json!(3))]);
+        assert_eq!(blank.display_name(), "(device) [object_instance=3]");
+        // Whitespace-only device_key also treated as blank.
+        let ws = point("   ", &[("object_instance", serde_json::json!(3))]);
+        assert_eq!(ws.display_name(), "(device) [object_instance=3]");
+    }
+
+    #[test]
+    fn telemetry_value_display_formats() {
+        // Numbers render with 3 decimal places; text renders verbatim.
+        assert_eq!(TelemetryValue::Number(1.5).to_string(), "1.500");
+        assert_eq!(TelemetryValue::Number(-0.1).to_string(), "-0.100");
+        assert_eq!(TelemetryValue::Text("active".into()).to_string(), "active");
+    }
+
+    #[test]
+    fn point_status_publish_success_and_failure() {
+        let mut status = PointStatus::default();
+        status.record_publish_failure("broker down");
+        assert_eq!(status.last_publish_error.as_deref(), Some("broker down"));
+        // A read failure does not clear the publish error.
+        status.record_read_failure("timeout");
+        assert_eq!(status.last_publish_error.as_deref(), Some("broker down"));
+        // A publish success clears it.
+        status.record_publish_success();
+        assert_eq!(status.last_publish_error, None);
+    }
+
+    #[test]
     fn point_status_lifecycle() {
         let mut status = PointStatus::default();
         assert!(status.stale);
