@@ -967,8 +967,10 @@ pub fn spawn_republisher(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PayloadFormat;
     use crate::model::{
-        BrowseOutcome, DiscoverOutcome, DiscoveredDevice, PointConfig, PollOutcome, RefreshOutcome,
+        BrowseOutcome, DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig, PollOutcome,
+        RefreshOutcome, TelemetryValue,
     };
     use crossbeam_channel::unbounded;
     use std::sync::OnceLock;
@@ -1087,6 +1089,21 @@ mod tests {
         }
         let identity = PointIdentity::from_point(&points[0]);
         assert_eq!(status.get(&identity).unwrap().consecutive_failures, 1);
+    }
+
+    #[test]
+    fn record_unresolved_failures_noop_when_no_enabled_point_matches() {
+        // The unresolved set is non-empty, but no enabled point references those
+        // devices -> nothing is emitted and no status is touched.
+        let (tx, rx) = unbounded();
+        let points = vec![bacnet_point(1, true)]; // device 1, but 999 is unresolved
+        let unresolved = HashSet::from([999u32]);
+        let mut status = HashMap::new();
+
+        record_unresolved_failures(&tx, &points, &unresolved, &mut status);
+
+        assert!(rx.try_recv().is_err(), "no Failures should be emitted");
+        assert!(status.is_empty());
     }
 
     #[test]
@@ -1244,5 +1261,1098 @@ mod tests {
             message.contains("does not support discovery"),
             "got: {message}"
         );
+    }
+
+    // ---- Pure-helper coverage -------------------------------------------------
+
+    #[test]
+    fn device_instance_parses_number_string_and_rejects_others() {
+        // Numeric addressing value.
+        let mut num = Addressing::new();
+        num.insert("device_instance".into(), serde_json::json!(7));
+        let point = PointConfig {
+            addressing: num,
+            ..PointConfig::default()
+        };
+        assert_eq!(device_instance(&point), Some(7));
+
+        // String addressing value (trimmed + parsed).
+        let mut text = Addressing::new();
+        text.insert("device_instance".into(), serde_json::json!("  42 "));
+        let point = PointConfig {
+            addressing: text,
+            ..PointConfig::default()
+        };
+        assert_eq!(device_instance(&point), Some(42));
+
+        // Unparseable string -> None.
+        let mut bad = Addressing::new();
+        bad.insert("device_instance".into(), serde_json::json!("not-a-number"));
+        let point = PointConfig {
+            addressing: bad,
+            ..PointConfig::default()
+        };
+        assert_eq!(device_instance(&point), None);
+
+        // Non-number/non-string JSON -> None.
+        let mut arr = Addressing::new();
+        arr.insert("device_instance".into(), serde_json::json!([1, 2]));
+        let point = PointConfig {
+            addressing: arr,
+            ..PointConfig::default()
+        };
+        assert_eq!(device_instance(&point), None);
+
+        // Missing key -> None.
+        assert_eq!(device_instance(&PointConfig::default()), None);
+    }
+
+    #[test]
+    fn device_backoff_max_reads_number_string_and_default_with_clamp() {
+        // Numeric override, clamped to a floor of 10s.
+        let mut conn = Addressing::new();
+        conn.insert("device_backoff_max_secs".into(), serde_json::json!(120));
+        assert_eq!(device_backoff_max(&conn), Duration::from_secs(120));
+
+        let mut low = Addressing::new();
+        low.insert("device_backoff_max_secs".into(), serde_json::json!(1));
+        assert_eq!(device_backoff_max(&low), Duration::from_secs(10));
+
+        // String override.
+        let mut text = Addressing::new();
+        text.insert("device_backoff_max_secs".into(), serde_json::json!("45"));
+        assert_eq!(device_backoff_max(&text), Duration::from_secs(45));
+
+        // Unparseable string falls back to 300 (then clamped, still 300).
+        let mut bad = Addressing::new();
+        bad.insert("device_backoff_max_secs".into(), serde_json::json!("oops"));
+        assert_eq!(device_backoff_max(&bad), Duration::from_secs(300));
+
+        // Missing key -> the compile-time default.
+        assert_eq!(device_backoff_max(&Addressing::new()), DEFAULT_DEVICE_BACKOFF_MAX);
+    }
+
+    #[test]
+    fn unique_device_instances_dedupes_sorts_and_skips_disabled() {
+        let points = vec![
+            bacnet_point(30, true),
+            bacnet_point(10, true),
+            bacnet_point(30, true), // duplicate
+            bacnet_point(20, false), // disabled -> excluded
+        ];
+        assert_eq!(unique_device_instances(&points), vec![10, 30]);
+    }
+
+    #[test]
+    fn envelope_id_and_point_name_fall_back_to_display_name() {
+        // Populated device_key / tag_path are used verbatim.
+        let mut addressing = Addressing::new();
+        addressing.insert("object_instance".into(), serde_json::json!(3));
+        let point = PointConfig {
+            device_key: "AHU-1".into(),
+            tag_path: "AHU-1/SupplyTemp".into(),
+            addressing: addressing.clone(),
+            ..PointConfig::default()
+        };
+        assert_eq!(envelope_device_id(&point), "AHU-1");
+        assert_eq!(envelope_point_name(&point), "AHU-1/SupplyTemp");
+
+        // Blank device_key / tag_path fall back to the display name.
+        let blank = PointConfig {
+            device_key: "  ".into(),
+            tag_path: "  ".into(),
+            addressing,
+            ..PointConfig::default()
+        };
+        let display = blank.display_name();
+        assert_eq!(envelope_device_id(&blank), display);
+        assert_eq!(envelope_point_name(&blank), display);
+    }
+
+    #[test]
+    fn emit_refresh_state_change_logs_both_transitions_and_records_failures() {
+        let (tx, rx) = unbounded();
+        let points = vec![bacnet_point(500, true)];
+        let mut change = RefreshStateChange::default();
+        change.newly_resolved = vec![100];
+        change.newly_unresolved = HashSet::from([500u32]);
+        let mut status = HashMap::new();
+
+        emit_refresh_state_change(&tx, &points, "keepalive", change, &mut status);
+
+        let mut saw_resolved_log = false;
+        let mut saw_unresolved_log = false;
+        let mut saw_failures = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                WorkerEvent::Log(LogLevel::Info, message) if message.contains("resolved during") => {
+                    saw_resolved_log = true;
+                }
+                WorkerEvent::Log(LogLevel::Warning, message)
+                    if message.contains("unresolved during") =>
+                {
+                    saw_unresolved_log = true;
+                }
+                WorkerEvent::Failures(failures) => {
+                    saw_failures = failures.iter().any(|f| f.error.contains("not in I-Am cache"));
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_resolved_log, "expected a resolved Info log");
+        assert!(saw_unresolved_log, "expected an unresolved Warning log");
+        assert!(saw_failures, "expected Failures for the newly-unresolved device");
+        // The unresolved point's status got a recorded read failure.
+        let id = PointIdentity::from_point(&points[0]);
+        assert_eq!(status.get(&id).unwrap().consecutive_failures, 1);
+    }
+
+    // ---- A scripted fake protocol driven via `conn` flags ---------------------
+    //
+    // The republisher factory type is a bare `fn()` pointer that cannot capture
+    // state, so scenario configuration is threaded through the `conn` Addressing
+    // (which the worker forwards to every protocol call). This keeps a single
+    // fake + factory yet lets each test pick discover/browse/poll/refresh
+    // behavior race-free (each call gets its own `conn`).
+    struct ScriptedProto;
+
+    fn scripted_caps() -> &'static Capabilities {
+        static CAPS: OnceLock<Capabilities> = OnceLock::new();
+        CAPS.get_or_init(|| Capabilities {
+            id: "scripted",
+            display_name: "Scripted",
+            discovery: DiscoveryKind::Broadcast,
+            browse: BrowseKind::ObjectList,
+            connection_fields: Vec::new(),
+            addressing_fields: Vec::new(),
+            default_port: 0,
+        })
+    }
+
+    fn flag(conn: &Addressing, key: &str) -> bool {
+        conn.get(key) == Some(&serde_json::json!(true))
+    }
+
+    fn count(conn: &Addressing, key: &str, default: usize) -> usize {
+        match conn.get(key) {
+            Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(default as u64) as usize,
+            _ => default,
+        }
+    }
+
+    fn u32_list(conn: &Addressing, key: &str) -> Vec<u32> {
+        match conn.get(key) {
+            Some(serde_json::Value::Array(values)) => values
+                .iter()
+                .filter_map(|v| v.as_u64().map(|n| n as u32))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RepublishProtocol for ScriptedProto {
+        fn capabilities(&self) -> &Capabilities {
+            scripted_caps()
+        }
+
+        async fn discover(&self, conn: &Addressing) -> anyhow::Result<DiscoverOutcome> {
+            if flag(conn, "discover_err") {
+                anyhow::bail!("discover boom");
+            }
+            let mut devices = Vec::new();
+            for i in 0..count(conn, "devices", 0) {
+                devices.push(DiscoveredDevice {
+                    key: format!("d{i}"),
+                    instance: Some(1000 + i as u32),
+                    address: "127.0.0.1".into(),
+                    detail: String::new(),
+                });
+            }
+            if flag(conn, "bad_device") {
+                devices.push(DiscoveredDevice {
+                    key: "d-bad".into(),
+                    instance: Some(9000),
+                    address: "x".into(),
+                    detail: String::new(),
+                });
+            }
+            let mut warnings = Vec::new();
+            if flag(conn, "discover_warn") {
+                warnings.push("discover warning".into());
+            }
+            Ok(DiscoverOutcome { devices, warnings })
+        }
+
+        async fn browse(
+            &self,
+            conn: &Addressing,
+            device: &DiscoveredDevice,
+        ) -> anyhow::Result<BrowseOutcome> {
+            if device.key == "d-bad" || flag(conn, "browse_err") {
+                anyhow::bail!("browse boom for {}", device.key);
+            }
+            let mut points = Vec::new();
+            for i in 0..count(conn, "browse_points", 1) {
+                let mut addressing = Addressing::new();
+                addressing.insert(
+                    "device_instance".into(),
+                    serde_json::json!(device.instance.unwrap_or(0)),
+                );
+                addressing.insert("object_instance".into(), serde_json::json!(i));
+                points.push(DiscoveredPoint {
+                    device_key: device.key.clone(),
+                    name: Some(format!("pt{i}")),
+                    description: None,
+                    units: None,
+                    value: None,
+                    addressing,
+                    suggested_tag_path: format!("{}/pt{i}", device.key),
+                });
+            }
+            let mut warnings = Vec::new();
+            if flag(conn, "browse_warn") {
+                warnings.push("browse warning".into());
+            }
+            Ok(BrowseOutcome { points, warnings })
+        }
+
+        async fn poll(
+            &self,
+            conn: &Addressing,
+            points: &[PointConfig],
+        ) -> anyhow::Result<PollOutcome> {
+            if flag(conn, "poll_err") {
+                anyhow::bail!("poll boom");
+            }
+            let mut samples = Vec::new();
+            let mut failures = Vec::new();
+            for (i, point) in points.iter().enumerate() {
+                if flag(conn, "poll_fail_points") {
+                    failures.push(PointFailure {
+                        point: point.clone(),
+                        error: "read timeout".into(),
+                    });
+                } else {
+                    samples.push(PointSample {
+                        point: point.clone(),
+                        value: TelemetryValue::Number(i as f64),
+                        topic: String::new(),
+                        timestamp_ms: 1000 + i as i64,
+                    });
+                }
+            }
+            let mut warnings = Vec::new();
+            if flag(conn, "poll_warn") {
+                warnings.push("poll warning".into());
+            }
+            Ok(PollOutcome {
+                samples,
+                failures,
+                warnings,
+            })
+        }
+
+        async fn refresh_devices(
+            &self,
+            conn: &Addressing,
+            device_instances: &[u32],
+        ) -> anyhow::Result<RefreshOutcome> {
+            if flag(conn, "refresh_err") {
+                anyhow::bail!("refresh boom");
+            }
+            let unresolved = u32_list(conn, "unresolved");
+            let resolved = device_instances
+                .iter()
+                .copied()
+                .filter(|i| !unresolved.contains(i))
+                .collect();
+            Ok(RefreshOutcome {
+                resolved,
+                unresolved,
+            })
+        }
+    }
+
+    fn scripted_factory() -> Box<dyn RepublishProtocol> {
+        Box::new(ScriptedProto)
+    }
+
+    /// An MQTT config that never reaches a broker: the event loop stays in
+    /// connect/backoff so `try_enqueue_sample` only fills the outbound channel.
+    fn offline_mqtt(format: PayloadFormat) -> MqttConfig {
+        MqttConfig {
+            host: "127.0.0.1".into(),
+            port: 1,
+            use_tls: false,
+            payload_format: format,
+            ..MqttConfig::default()
+        }
+    }
+
+    /// Collect worker events until `done` returns true or the deadline passes.
+    fn collect_until(
+        rx: &crossbeam_channel::Receiver<WorkerEvent>,
+        timeout: Duration,
+        mut done: impl FnMut(&WorkerEvent) -> bool,
+    ) -> Vec<WorkerEvent> {
+        let deadline = Instant::now() + timeout;
+        let mut events = Vec::new();
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(event) => {
+                    let stop = done(&event);
+                    events.push(event);
+                    if stop {
+                        break;
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        events
+    }
+
+    fn is_finished(events: &[WorkerEvent], needle: &str) -> bool {
+        events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Finished(m) if m.contains(needle)))
+    }
+
+    fn is_running(events: &[WorkerEvent]) -> bool {
+        events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Lifecycle(RepublisherLifecycle::Running)))
+    }
+
+    // ---- spawn_discovery ------------------------------------------------------
+
+    #[test]
+    fn spawn_discovery_emits_devices_warnings_and_finished() {
+        let (tx, rx) = unbounded();
+        let mut conn = Addressing::new();
+        conn.insert("devices".into(), serde_json::json!(2));
+        conn.insert("discover_warn".into(), serde_json::json!(true));
+        spawn_discovery(tx, scripted_factory, conn);
+
+        let events = collect_until(&rx, Duration::from_secs(5), |e| {
+            matches!(e, WorkerEvent::Finished(_))
+        });
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WorkerEvent::Devices(o) if o.devices.len() == 2)),
+            "expected 2 discovered devices"
+        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Warning, m) if m == "discover warning")));
+        assert!(is_finished(&events, "Discovery found 2 device"));
+    }
+
+    #[test]
+    fn spawn_discovery_reports_failure() {
+        let (tx, rx) = unbounded();
+        let mut conn = Addressing::new();
+        conn.insert("discover_err".into(), serde_json::json!(true));
+        spawn_discovery(tx, scripted_factory, conn);
+
+        let events = collect_until(&rx, Duration::from_secs(5), |e| {
+            matches!(e, WorkerEvent::Finished(_))
+        });
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Discovery failed"))));
+        assert!(is_finished(&events, "Discovery failed"));
+    }
+
+    // ---- spawn_browse ---------------------------------------------------------
+
+    #[test]
+    fn spawn_browse_emits_points_and_finished() {
+        let (tx, rx) = unbounded();
+        let mut conn = Addressing::new();
+        conn.insert("browse_points".into(), serde_json::json!(3));
+        conn.insert("browse_warn".into(), serde_json::json!(true));
+        let device = DiscoveredDevice {
+            key: "AHU-7".into(),
+            instance: Some(7),
+            address: "127.0.0.1".into(),
+            detail: String::new(),
+        };
+        spawn_browse(tx, scripted_factory, conn, device);
+
+        let events = collect_until(&rx, Duration::from_secs(5), |e| {
+            matches!(e, WorkerEvent::Finished(_))
+        });
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Points(p) if p.len() == 3)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Warning, m) if m == "browse warning")));
+        assert!(is_finished(&events, "Browsed 3 point(s) on AHU-7"));
+    }
+
+    #[test]
+    fn spawn_browse_reports_failure() {
+        let (tx, rx) = unbounded();
+        let device = DiscoveredDevice {
+            key: "d-bad".into(),
+            instance: Some(1),
+            address: "x".into(),
+            detail: String::new(),
+        };
+        spawn_browse(tx, scripted_factory, Addressing::new(), device);
+
+        let events = collect_until(&rx, Duration::from_secs(5), |e| {
+            matches!(e, WorkerEvent::Finished(_))
+        });
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Browse failed"))));
+        assert!(is_finished(&events, "Browse failed"));
+    }
+
+    // ---- spawn_scan_all_objects ----------------------------------------------
+
+    #[test]
+    fn spawn_scan_all_objects_merges_points_and_reports_failures() {
+        let (tx, rx) = unbounded();
+        let mut conn = Addressing::new();
+        conn.insert("browse_points".into(), serde_json::json!(2));
+        conn.insert("browse_warn".into(), serde_json::json!(true));
+        let devices = vec![
+            DiscoveredDevice {
+                key: "d0".into(),
+                instance: Some(1000),
+                address: "127.0.0.1".into(),
+                detail: String::new(),
+            },
+            DiscoveredDevice {
+                key: "d-bad".into(), // browse fails for this one
+                instance: Some(9000),
+                address: "x".into(),
+                detail: String::new(),
+            },
+        ];
+        spawn_scan_all_objects(tx, scripted_factory, conn, devices, Vec::new());
+
+        let events = collect_until(&rx, Duration::from_secs(5), |e| {
+            matches!(e, WorkerEvent::Finished(_))
+        });
+        // Progress emitted (initial + one per device).
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::ScanProgress { total, .. } if *total == 2)));
+        // The good device contributed 2 points to the bulk merge.
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::BulkTagImport(m) if m.added == 2)));
+        assert!(is_finished(&events, "1 failure(s)"));
+        assert!(is_finished(&events, "2 point(s) added"));
+    }
+
+    // ---- spawn_poll_once ------------------------------------------------------
+
+    #[test]
+    fn spawn_poll_once_with_no_enabled_points_finishes_early() {
+        let (tx, rx) = unbounded();
+        let mut disabled = bacnet_point(1, false);
+        disabled.enabled = false;
+        spawn_poll_once(
+            tx,
+            scripted_factory,
+            Addressing::new(),
+            offline_mqtt(PayloadFormat::Scalar),
+            vec![disabled],
+        );
+        let events = collect_until(&rx, Duration::from_secs(5), |e| {
+            matches!(e, WorkerEvent::Finished(_))
+        });
+        assert!(is_finished(&events, "No enabled points to poll"));
+    }
+
+    #[test]
+    fn spawn_poll_once_polls_publishes_and_finishes() {
+        let (tx, rx) = unbounded();
+        let points = vec![bacnet_point(10, true), bacnet_point(20, true)];
+        spawn_poll_once(
+            tx,
+            scripted_factory,
+            Addressing::new(),
+            offline_mqtt(PayloadFormat::Scalar),
+            points,
+        );
+        let events = collect_until(&rx, Duration::from_secs(5), |e| {
+            matches!(e, WorkerEvent::Finished(_))
+        });
+        // Scalar path enqueues each sample and emits a per-point publish event.
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::PointPublish { error: None, .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Samples(s) if s.len() == 2)));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::PublishStatus(stats) if stats.published == 2
+        )));
+        assert!(is_finished(&events, "Poll once complete"));
+    }
+
+    #[test]
+    fn spawn_poll_once_envelope_path_publishes_grouped_by_device() {
+        let (tx, rx) = unbounded();
+        let points = vec![bacnet_point(10, true), bacnet_point(10, true)];
+        spawn_poll_once(
+            tx,
+            scripted_factory,
+            Addressing::new(),
+            offline_mqtt(PayloadFormat::NetixEnvelope),
+            points,
+        );
+        let events = collect_until(&rx, Duration::from_secs(5), |e| {
+            matches!(e, WorkerEvent::Finished(_))
+        });
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::PointPublish { error: None, .. })));
+        assert!(is_finished(&events, "Poll once complete"));
+    }
+
+    #[test]
+    fn spawn_poll_once_surfaces_read_failures_and_warnings() {
+        let (tx, rx) = unbounded();
+        let mut conn = Addressing::new();
+        conn.insert("poll_fail_points".into(), serde_json::json!(true));
+        conn.insert("poll_warn".into(), serde_json::json!(true));
+        spawn_poll_once(
+            tx,
+            scripted_factory,
+            conn,
+            offline_mqtt(PayloadFormat::Scalar),
+            vec![bacnet_point(10, true)],
+        );
+        let events = collect_until(&rx, Duration::from_secs(5), |e| {
+            matches!(e, WorkerEvent::Finished(_))
+        });
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Failures(f) if f.len() == 1)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Warning, m) if m == "poll warning")));
+        assert!(is_finished(&events, "Poll once complete"));
+    }
+
+    #[test]
+    fn spawn_poll_once_reports_poll_failure() {
+        let (tx, rx) = unbounded();
+        let mut conn = Addressing::new();
+        conn.insert("poll_err".into(), serde_json::json!(true));
+        spawn_poll_once(
+            tx,
+            scripted_factory,
+            conn,
+            offline_mqtt(PayloadFormat::Scalar),
+            vec![bacnet_point(10, true)],
+        );
+        let events = collect_until(&rx, Duration::from_secs(5), |e| {
+            matches!(e, WorkerEvent::Finished(_))
+        });
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Poll failed"))));
+        assert!(is_finished(&events, "Poll once failed"));
+    }
+
+    // ---- discover_points ------------------------------------------------------
+
+    #[tokio::test]
+    async fn discover_points_builds_from_discovery_and_browse() {
+        let mut conn = Addressing::new();
+        conn.insert("devices".into(), serde_json::json!(2));
+        conn.insert("browse_points".into(), serde_json::json!(2));
+        conn.insert("discover_warn".into(), serde_json::json!(true));
+        conn.insert("browse_warn".into(), serde_json::json!(true));
+
+        let (points, warnings) = discover_points(&ScriptedProto, &conn).await.unwrap();
+        // 2 devices x 2 points each, all identity-distinct.
+        assert_eq!(points.len(), 4);
+        assert!(points.iter().all(|p| p.enabled));
+        assert!(warnings.iter().any(|w| w == "discover warning"));
+        assert!(warnings.iter().any(|w| w == "browse warning"));
+    }
+
+    #[tokio::test]
+    async fn discover_points_records_per_device_browse_failure() {
+        let mut conn = Addressing::new();
+        conn.insert("devices".into(), serde_json::json!(1));
+        conn.insert("browse_points".into(), serde_json::json!(1));
+        conn.insert("bad_device".into(), serde_json::json!(true));
+
+        let (points, warnings) = discover_points(&ScriptedProto, &conn).await.unwrap();
+        // Only the good device yields a point; the bad one adds a browse warning.
+        assert_eq!(points.len(), 1);
+        assert!(warnings.iter().any(|w| w.contains("browse failed")));
+    }
+
+    #[tokio::test]
+    async fn discover_points_propagates_discovery_error() {
+        let mut conn = Addressing::new();
+        conn.insert("discover_err".into(), serde_json::json!(true));
+        assert!(discover_points(&ScriptedProto, &conn).await.is_err());
+    }
+
+    // ---- spawn_republisher decision paths (no broker) -------------------------
+
+    #[test]
+    fn spawn_republisher_discover_on_start_builds_points_and_runs() {
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut conn = Addressing::new();
+        conn.insert("devices".into(), serde_json::json!(1));
+        conn.insert("browse_points".into(), serde_json::json!(1));
+        conn.insert("browse_warn".into(), serde_json::json!(true));
+        spawn_republisher(
+            tx,
+            scripted_factory,
+            conn,
+            offline_mqtt(PayloadFormat::Scalar),
+            Vec::new(),
+            true,
+            Arc::clone(&stop),
+        );
+        // Drive until a publish cycle completes (proves it built points, entered
+        // the loop, polled, and published without a broker).
+        let events = collect_until(&rx, Duration::from_secs(6), |e| {
+            matches!(e, WorkerEvent::PublishStatus(_))
+        });
+        stop.store(true, Ordering::Relaxed);
+        assert!(is_running(&events), "expected a Running lifecycle");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Info, m)
+                    if m.contains("built 1 point(s) from discovery"))),
+            "expected the discover_on_start build log"
+        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::PublishStatus(_))));
+    }
+
+    #[test]
+    fn spawn_republisher_discover_on_start_discovery_error_fails_loud() {
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut conn = Addressing::new();
+        conn.insert("discover_err".into(), serde_json::json!(true));
+        spawn_republisher(
+            tx,
+            scripted_factory,
+            conn,
+            offline_mqtt(PayloadFormat::Scalar),
+            Vec::new(),
+            true,
+            Arc::clone(&stop),
+        );
+        let message = wait_for_failed(&rx).expect("expected Failed lifecycle");
+        stop.store(true, Ordering::Relaxed);
+        assert!(
+            message.contains("discover_on_start discovery failed"),
+            "got: {message}"
+        );
+    }
+
+    #[test]
+    fn spawn_republisher_discover_on_start_no_points_fails_loud() {
+        // Discovery is supported but yields zero devices -> no pollable points.
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut conn = Addressing::new();
+        conn.insert("devices".into(), serde_json::json!(0));
+        spawn_republisher(
+            tx,
+            scripted_factory,
+            conn,
+            offline_mqtt(PayloadFormat::Scalar),
+            Vec::new(),
+            true,
+            Arc::clone(&stop),
+        );
+        let message = wait_for_failed(&rx).expect("expected Failed lifecycle");
+        stop.store(true, Ordering::Relaxed);
+        assert!(
+            message.contains("discovery found no pollable points"),
+            "got: {message}"
+        );
+    }
+
+    #[test]
+    fn spawn_republisher_runs_configured_points_and_publishes() {
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        // Two resolved devices, refresh reports all resolved (no unresolved list).
+        let points = vec![bacnet_point(10, true), bacnet_point(20, true)];
+        spawn_republisher(
+            tx,
+            scripted_factory,
+            Addressing::new(),
+            offline_mqtt(PayloadFormat::Scalar),
+            points,
+            false,
+            Arc::clone(&stop),
+        );
+        let events = collect_until(&rx, Duration::from_secs(6), |e| {
+            matches!(e, WorkerEvent::PublishStatus(_))
+        });
+        stop.store(true, Ordering::Relaxed);
+        assert!(is_running(&events));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Samples(s) if !s.is_empty())));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::PublishStatus(_))));
+    }
+
+    #[test]
+    fn spawn_republisher_warns_and_skips_unresolved_devices() {
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        // Device 42 is reported unresolved by refresh -> its points are skipped
+        // and a Failures event is emitted rather than polling it.
+        let mut conn = Addressing::new();
+        conn.insert("unresolved".into(), serde_json::json!([42]));
+        let points = vec![bacnet_point(42, true)];
+        spawn_republisher(
+            tx,
+            scripted_factory,
+            conn,
+            offline_mqtt(PayloadFormat::Scalar),
+            points,
+            false,
+            Arc::clone(&stop),
+        );
+        let events = collect_until(&rx, Duration::from_secs(6), |e| {
+            matches!(e, WorkerEvent::Failures(_))
+        });
+        stop.store(true, Ordering::Relaxed);
+        assert!(is_running(&events));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Log(LogLevel::Warning, m) if m.contains("not in I-Am cache")
+        )));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Failures(f)
+                if f.iter().any(|x| x.error.contains("not in I-Am cache")))));
+    }
+
+    #[test]
+    fn spawn_republisher_warns_when_initial_refresh_fails() {
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut conn = Addressing::new();
+        conn.insert("refresh_err".into(), serde_json::json!(true));
+        let points = vec![bacnet_point(10, true)];
+        spawn_republisher(
+            tx,
+            scripted_factory,
+            conn,
+            offline_mqtt(PayloadFormat::Scalar),
+            points,
+            false,
+            Arc::clone(&stop),
+        );
+        // Refresh failing is non-fatal: the worker still reaches Running and (with
+        // no unresolved set) polls the point.
+        let events = collect_until(&rx, Duration::from_secs(6), |e| {
+            matches!(e, WorkerEvent::PublishStatus(_))
+        });
+        stop.store(true, Ordering::Relaxed);
+        assert!(is_running(&events));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Log(LogLevel::Warning, m) if m.contains("Device table refresh failed")
+        )));
+    }
+
+    // ---- publish_samples / publish_envelope (direct, no broker) ---------------
+
+    #[tokio::test]
+    async fn publish_samples_scalar_enqueues_and_emits_events() {
+        let (tx, rx) = unbounded();
+        let mut publisher = RumqttPublisher::new(&offline_mqtt(PayloadFormat::Scalar)).unwrap();
+        let mqtt = offline_mqtt(PayloadFormat::Scalar);
+        let sample = PointSample {
+            point: bacnet_point(1, true),
+            value: TelemetryValue::Number(3.5),
+            topic: "Netix/A".into(),
+            timestamp_ms: 1,
+        };
+        let mut status = HashMap::new();
+        status.insert(PointIdentity::from_point(&sample.point), PointStatus::default());
+
+        let stats = publish_samples(&tx, &mut publisher, &mqtt, &[sample.clone()], &mut status);
+        assert_eq!(stats.queued, 1);
+        assert_eq!(stats.published, 1);
+        assert_eq!(stats.failed, 0);
+        // Success recorded on the point status and a publish event emitted.
+        assert!(status
+            .get(&PointIdentity::from_point(&sample.point))
+            .unwrap()
+            .last_publish_error
+            .is_none());
+        assert!(rx
+            .try_iter()
+            .any(|e| matches!(e, WorkerEvent::PointPublish { error: None, .. })));
+    }
+
+    #[tokio::test]
+    async fn publish_samples_envelope_groups_and_emits_events() {
+        let (tx, rx) = unbounded();
+        let mut publisher =
+            RumqttPublisher::new(&offline_mqtt(PayloadFormat::NetixEnvelope)).unwrap();
+        let mqtt = offline_mqtt(PayloadFormat::NetixEnvelope);
+        // Two samples for the same device -> one envelope publish, two point events.
+        let s1 = PointSample {
+            point: bacnet_point(1, true),
+            value: TelemetryValue::Number(1.0),
+            topic: String::new(),
+            timestamp_ms: 5,
+        };
+        let s2 = PointSample {
+            point: bacnet_point(1, true),
+            value: TelemetryValue::Text("on".into()),
+            topic: String::new(),
+            timestamp_ms: 9,
+        };
+        let mut status = HashMap::new();
+        status.insert(PointIdentity::from_point(&s1.point), PointStatus::default());
+
+        let stats = publish_samples(&tx, &mut publisher, &mqtt, &[s1, s2], &mut status);
+        assert_eq!(stats.queued, 2);
+        assert_eq!(stats.published, 2);
+        let publishes = rx
+            .try_iter()
+            .filter(|e| matches!(e, WorkerEvent::PointPublish { error: None, .. }))
+            .count();
+        assert_eq!(publishes, 2);
+    }
+
+    #[tokio::test]
+    async fn publish_samples_counts_and_reports_channel_full_failures() {
+        let (tx, rx) = unbounded();
+        let mut publisher = RumqttPublisher::new(&offline_mqtt(PayloadFormat::Scalar)).unwrap();
+        let mqtt = offline_mqtt(PayloadFormat::Scalar);
+        // Flood well past the outbound channel capacity so enqueue fails fast.
+        let point = bacnet_point(1, true);
+        let mut status = HashMap::new();
+        status.insert(PointIdentity::from_point(&point), PointStatus::default());
+        let samples: Vec<PointSample> = (0..5000)
+            .map(|i| PointSample {
+                point: point.clone(),
+                value: TelemetryValue::Number(i as f64),
+                topic: "Netix/Flood".into(),
+                timestamp_ms: i as i64,
+            })
+            .collect();
+
+        let stats = publish_samples(&tx, &mut publisher, &mqtt, &samples, &mut status);
+        assert_eq!(stats.queued, 5000);
+        assert!(stats.failed > 0, "channel-full drops should be counted");
+        assert_eq!(stats.published + stats.failed, 5000);
+        assert!(stats.last_error.as_deref().unwrap().contains("failed to enqueue"));
+        // A publish-failure event and a recorded publish error surfaced.
+        assert!(rx
+            .try_iter()
+            .any(|e| matches!(e, WorkerEvent::PointPublish { error: Some(_), .. })));
+        assert!(status
+            .get(&PointIdentity::from_point(&point))
+            .unwrap()
+            .last_publish_error
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn publish_envelope_counts_channel_full_failures() {
+        let (tx, rx) = unbounded();
+        let mut publisher =
+            RumqttPublisher::new(&offline_mqtt(PayloadFormat::NetixEnvelope)).unwrap();
+        let mqtt = offline_mqtt(PayloadFormat::NetixEnvelope);
+        // Distinct devices -> one envelope publish each, so enqueues pile up and
+        // eventually fail once the outbound channel is saturated.
+        let mut status = HashMap::new();
+        let samples: Vec<PointSample> = (0..6000u32)
+            .map(|i| {
+                let point = bacnet_point(i, true);
+                status.insert(PointIdentity::from_point(&point), PointStatus::default());
+                PointSample {
+                    point,
+                    value: TelemetryValue::Number(i as f64),
+                    topic: String::new(),
+                    timestamp_ms: i as i64,
+                }
+            })
+            .collect();
+
+        let stats = publish_samples(&tx, &mut publisher, &mqtt, &samples, &mut status);
+        assert_eq!(stats.queued, 6000);
+        assert!(stats.failed > 0, "saturated channel should record failures");
+        assert!(rx
+            .try_iter()
+            .any(|e| matches!(e, WorkerEvent::PointPublish { error: Some(_), .. })));
+    }
+
+    /// A TLS config with a CA path that holds no certificates: `build_transport`
+    /// (hence `RumqttPublisher::new`) fails without needing a broker.
+    fn broken_tls_mqtt() -> (MqttConfig, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("empty-ca.pem");
+        std::fs::write(&ca, b"not a certificate\n").unwrap();
+        let cfg = MqttConfig {
+            host: "127.0.0.1".into(),
+            port: 1,
+            use_tls: true,
+            ca_cert_path: Some(ca.to_string_lossy().into_owned()),
+            ..MqttConfig::default()
+        };
+        (cfg, dir)
+    }
+
+    #[test]
+    fn spawn_poll_once_fails_when_publisher_cannot_be_built() {
+        let (tx, rx) = unbounded();
+        let (cfg, _dir) = broken_tls_mqtt();
+        spawn_poll_once(
+            tx,
+            scripted_factory,
+            Addressing::new(),
+            cfg,
+            vec![bacnet_point(10, true)],
+        );
+        let events = collect_until(&rx, Duration::from_secs(5), |e| {
+            matches!(e, WorkerEvent::Finished(_))
+        });
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("MQTT publisher failed"))));
+        assert!(is_finished(&events, "Poll once failed"));
+    }
+
+    #[test]
+    fn spawn_republisher_fails_when_publisher_cannot_be_built() {
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (cfg, _dir) = broken_tls_mqtt();
+        spawn_republisher(
+            tx,
+            scripted_factory,
+            Addressing::new(),
+            cfg,
+            vec![bacnet_point(10, true)],
+            false,
+            Arc::clone(&stop),
+        );
+        let message = wait_for_failed(&rx).expect("expected Failed lifecycle");
+        stop.store(true, Ordering::Relaxed);
+        // spawn_republisher surfaces the top-level context of the build error.
+        assert!(
+            message.contains("failed to load MQTT CA certificate"),
+            "got: {message}"
+        );
+    }
+
+    #[test]
+    fn spawn_republisher_loop_records_read_failures_and_warnings() {
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut conn = Addressing::new();
+        conn.insert("poll_fail_points".into(), serde_json::json!(true));
+        conn.insert("poll_warn".into(), serde_json::json!(true));
+        spawn_republisher(
+            tx,
+            scripted_factory,
+            conn,
+            offline_mqtt(PayloadFormat::Scalar),
+            vec![bacnet_point(10, true)],
+            false,
+            Arc::clone(&stop),
+        );
+        // The loop polls, gets read failures + a warning, and emits Failures.
+        let events = collect_until(&rx, Duration::from_secs(6), |e| {
+            matches!(e, WorkerEvent::Failures(_))
+        });
+        stop.store(true, Ordering::Relaxed);
+        assert!(is_running(&events));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Failures(f) if !f.is_empty())));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Warning, m) if m == "poll warning")));
+    }
+
+    #[test]
+    fn spawn_republisher_loop_reports_poll_error() {
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut conn = Addressing::new();
+        conn.insert("poll_err".into(), serde_json::json!(true));
+        spawn_republisher(
+            tx,
+            scripted_factory,
+            conn,
+            offline_mqtt(PayloadFormat::Scalar),
+            vec![bacnet_point(10, true)],
+            false,
+            Arc::clone(&stop),
+        );
+        let events = collect_until(&rx, Duration::from_secs(6), |e| {
+            matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Poll failed"))
+        });
+        stop.store(true, Ordering::Relaxed);
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Poll failed"))));
+    }
+
+    #[test]
+    fn spawn_republisher_emits_graceful_shutdown_lifecycle() {
+        // Cover the Stopping -> (drain grace) -> Stopped tail: stop the worker and
+        // wait past CLIENT_STOP_TIMEOUT for the final lifecycle events.
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        spawn_republisher(
+            tx,
+            scripted_factory,
+            Addressing::new(),
+            offline_mqtt(PayloadFormat::Scalar),
+            vec![bacnet_point(10, true)],
+            false,
+            Arc::clone(&stop),
+        );
+        // Wait until it is Running, then request stop.
+        let running = collect_until(&rx, Duration::from_secs(5), is_running_single);
+        assert!(is_running(&running));
+        stop.store(true, Ordering::Relaxed);
+
+        // CLIENT_STOP_TIMEOUT is 5s between Stopping and Stopped.
+        let tail = collect_until(&rx, Duration::from_secs(9), |e| {
+            matches!(e, WorkerEvent::Lifecycle(RepublisherLifecycle::Stopped))
+        });
+        assert!(tail
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Lifecycle(RepublisherLifecycle::Stopping))));
+        assert!(tail
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Lifecycle(RepublisherLifecycle::Stopped))));
+    }
+
+    fn is_running_single(event: &WorkerEvent) -> bool {
+        matches!(event, WorkerEvent::Lifecycle(RepublisherLifecycle::Running))
     }
 }
