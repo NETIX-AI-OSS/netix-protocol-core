@@ -29,6 +29,28 @@ pub trait MqttPublisher {
         payload: Vec<u8>,
         retain: bool,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+
+    /// Running total of transport reconnects observed by the publisher. Default 0
+    /// for publishers that do not maintain a broker link (fakes/tests).
+    fn reconnect_count(&self) -> usize {
+        0
+    }
+
+    /// Running total of broker-confirmed QoS 1 deliveries. Default 0.
+    fn acked_count(&self) -> usize {
+        0
+    }
+
+    /// The last transient connection error observed, if any. Default `None`.
+    fn last_connection_error(&self) -> Option<String> {
+        None
+    }
+
+    /// A fatal, non-self-healing connection rejection (bad auth/not authorized),
+    /// if the broker has rejected the link. Default `None`.
+    fn connection_fatal_error(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,15 +294,6 @@ impl RumqttPublisher {
         stats
     }
 
-    pub(crate) fn try_enqueue_sample(
-        &self,
-        topic: &str,
-        payload: Vec<u8>,
-        retain: bool,
-    ) -> Result<()> {
-        self.enqueue(topic, payload, retain)
-    }
-
     pub fn reconnect_count(&self) -> usize {
         self.state.reconnects.load(Ordering::Relaxed)
     }
@@ -326,6 +339,37 @@ impl MqttPublisher for RumqttPublisher {
         retain: bool,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move { self.enqueue(topic, payload, retain) })
+    }
+
+    // The trait accessors read the same shared connection state as the inherent
+    // methods (accessed directly here to avoid inherent/trait name resolution
+    // ambiguity), so a generic caller sees identical values to a concrete one.
+    fn reconnect_count(&self) -> usize {
+        self.state.reconnects.load(Ordering::Relaxed)
+    }
+
+    fn acked_count(&self) -> usize {
+        self.state.acked.load(Ordering::Relaxed)
+    }
+
+    fn last_connection_error(&self) -> Option<String> {
+        self.state
+            .last_error
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+    }
+
+    fn connection_fatal_error(&self) -> Option<String> {
+        if self.state.fatal.load(Ordering::Relaxed) {
+            self.state
+                .last_error
+                .lock()
+                .ok()
+                .and_then(|value| value.clone())
+        } else {
+            None
+        }
     }
 }
 
@@ -1008,9 +1052,9 @@ mod tests {
         assert_eq!(stats.acked, 0);
         assert_eq!(stats.reconnects, 0);
 
-        // Direct enqueue helpers succeed too (channel has room).
-        publisher
-            .try_enqueue_sample("Netix/C", b"1".to_vec(), false)
+        // Direct enqueue via the trait succeeds too (channel has room).
+        MqttPublisher::publish(&mut publisher, "Netix/C", b"1".to_vec(), false)
+            .await
             .unwrap();
         MqttPublisher::publish(&mut publisher, "Netix/D", b"1".to_vec(), true)
             .await

@@ -20,7 +20,7 @@ use crate::log::LogLevel;
 use crate::model::{
     PointConfig, PointFailure, PointIdentity, PointSample, PointStatus, PublishStats,
 };
-use crate::mqtt::{publish_health, HealthSnapshot, RumqttPublisher};
+use crate::mqtt::{publish_health, HealthSnapshot, MqttPublisher, RumqttPublisher};
 use crate::protocol::{RepublishFactory, RepublishProtocol};
 
 use backoff::{update_device_backoffs, DeviceBackoff};
@@ -33,6 +33,34 @@ const CLIENT_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_DEVICE_BACKOFF_MAX: Duration = Duration::from_secs(300);
 const DEVICE_RERESOLVE_INTERVAL: Duration = Duration::from_secs(60);
 const DEVICE_TABLE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(240);
+
+/// The cadence knobs of the continuous republisher loop. Extracted so tests can
+/// drive [`run_republisher`] with tiny intervals while production keeps the real
+/// timings via [`LoopIntervals::default`] (the compile-time consts above).
+struct LoopIntervals {
+    /// How often to publish a health snapshot.
+    health: Duration,
+    /// How often to retry resolving still-unresolved devices.
+    reresolve: Duration,
+    /// How often to do a full device-table keepalive refresh.
+    keepalive: Duration,
+    /// Sleep between poll cycles.
+    poll_tick: Duration,
+    /// Grace period after `Stopping` before emitting `Stopped`.
+    client_stop_timeout: Duration,
+}
+
+impl Default for LoopIntervals {
+    fn default() -> Self {
+        Self {
+            health: HEALTH_INTERVAL,
+            reresolve: DEVICE_RERESOLVE_INTERVAL,
+            keepalive: DEVICE_TABLE_KEEPALIVE_INTERVAL,
+            poll_tick: POLL_TICK,
+            client_stop_timeout: CLIENT_STOP_TIMEOUT,
+        }
+    }
+}
 
 #[derive(Default)]
 struct RefreshStateChange {
@@ -198,36 +226,24 @@ fn emit_refresh_state_change(
     }
 }
 
-fn publish_samples(
+async fn publish_samples<P: MqttPublisher + Send>(
     sender: &Sender<WorkerEvent>,
-    publisher: &mut RumqttPublisher,
+    publisher: &mut P,
     mqtt: &MqttConfig,
     samples: &[PointSample],
     point_status: &mut HashMap<PointIdentity, PointStatus>,
 ) -> PublishStats {
     if mqtt.payload_format == PayloadFormat::NetixEnvelope {
-        return publish_envelope(sender, publisher, mqtt, samples, point_status);
+        return publish_envelope(sender, publisher, mqtt, samples, point_status).await;
     }
     let mut stats = PublishStats::empty();
     for sample in samples {
         stats.queued += 1;
         let identity = PointIdentity::from_point(&sample.point);
-        let payload = match serde_json::to_vec(&sample.value.as_json_value()) {
-            Ok(payload) => payload,
-            Err(error) => {
-                let message = error.to_string();
-                stats.record_failure(message.clone());
-                if let Some(status) = point_status.get_mut(&identity) {
-                    status.record_publish_failure(&message);
-                }
-                let _ = sender.send(WorkerEvent::PointPublish {
-                    identity,
-                    error: Some(message),
-                });
-                continue;
-            }
-        };
-        match publisher.try_enqueue_sample(&sample.topic, payload, mqtt.retain) {
+        // as_json_value() yields a serde_json::Value; serializing one is infallible.
+        let payload = serde_json::to_vec(&sample.value.as_json_value())
+            .expect("serde_json::Value always serializes");
+        match publisher.publish(&sample.topic, payload, mqtt.retain).await {
             Ok(()) => {
                 stats.published += 1;
                 if let Some(status) = point_status.get_mut(&identity) {
@@ -267,9 +283,9 @@ fn publish_samples(
 /// "status"}]}` on `<device_topic_prefix>/<id>/telemetry`. This matches the
 /// envelope platform MQTT workers ingest, so a demo device's telemetry lands on
 /// the historian tag `<id>-<pointName>`.
-fn publish_envelope(
+async fn publish_envelope<P: MqttPublisher + Send>(
     sender: &Sender<WorkerEvent>,
-    publisher: &mut RumqttPublisher,
+    publisher: &mut P,
     mqtt: &MqttConfig,
     samples: &[PointSample],
     point_status: &mut HashMap<PointIdentity, PointStatus>,
@@ -312,13 +328,12 @@ fn publish_envelope(
             "points": points,
         });
         let topic = crate::topic::device_envelope_topic(mqtt, id);
-        let result = serde_json::to_vec(&envelope)
-            .map_err(|error| error.to_string())
-            .and_then(|payload| {
-                publisher
-                    .try_enqueue_sample(&topic, payload, mqtt.retain)
-                    .map_err(|error| error.to_string())
-            });
+        // envelope is a serde_json::Value; serializing one is infallible.
+        let payload = serde_json::to_vec(&envelope).expect("serde_json::Value always serializes");
+        let result = publisher
+            .publish(&topic, payload, mqtt.retain)
+            .await
+            .map_err(|error| error.to_string());
         match result {
             Ok(()) => {
                 stats.published += group.len();
@@ -560,7 +575,8 @@ pub fn spawn_poll_once(
                             &mqtt,
                             &samples,
                             &mut point_status,
-                        );
+                        )
+                        .await;
                         let _ = sender.send(WorkerEvent::Samples(samples));
                         let _ = sender.send(WorkerEvent::PublishStatus(stats));
                     }
@@ -660,7 +676,6 @@ pub fn spawn_republisher(
         let completed = run_async(sender.clone(), async move {
             let _ = sender.send(WorkerEvent::Lifecycle(RepublisherLifecycle::Starting));
             let proto = factory();
-            let backoff_max = device_backoff_max(&conn);
 
             // Resolve the working point set BEFORE opening the broker link. With no
             // enabled points we either discover-then-poll (discover_on_start) or
@@ -722,239 +737,17 @@ pub fn spawn_republisher(
                     return;
                 }
             };
-            let _ = sender.send(WorkerEvent::Lifecycle(RepublisherLifecycle::Running));
-
-            let device_instances = unique_device_instances(&points);
-            let mut unresolved_devices: HashSet<u32> = HashSet::new();
-            match proto.refresh_devices(&conn, &device_instances).await {
-                Ok(refresh) => {
-                    if !refresh.unresolved.is_empty() {
-                        log(
-                            &sender,
-                            LogLevel::Warning,
-                            format!(
-                                "{} of {} device(s) not in I-Am cache; their points will be skipped (resolution retried every {}s)",
-                                refresh.unresolved.len(),
-                                device_instances.len(),
-                                DEVICE_RERESOLVE_INTERVAL.as_secs()
-                            ),
-                        );
-                    }
-                    unresolved_devices = refresh.unresolved.into_iter().collect();
-                }
-                Err(error) => {
-                    log(
-                        &sender,
-                        LogLevel::Warning,
-                        format!("Device table refresh failed: {error:#}"),
-                    );
-                }
-            }
-
-            let mut last_poll: HashMap<PointIdentity, Instant> = HashMap::new();
-            let mut point_status: HashMap<PointIdentity, PointStatus> = HashMap::new();
-            record_unresolved_failures(&sender, &points, &unresolved_devices, &mut point_status);
-            let mut device_backoffs: HashMap<u32, DeviceBackoff> = HashMap::new();
-            let mut last_resolve_attempt = Instant::now();
-            let mut last_full_refresh = Instant::now();
-            let mut last_health = Instant::now()
-                .checked_sub(HEALTH_INTERVAL)
-                .unwrap_or_else(Instant::now);
-            let mut cycle_published = 0usize;
-            let mut cycle_failed_reads = 0usize;
-            let mut cycle_failed_publishes = 0usize;
-            let mut reconnects = 0usize;
-            let mut acked = 0usize;
-            let mut last_error: Option<String> = None;
-            // A broker auth/config rejection (bad password, not authorized) never
-            // self-heals, so warn the operator once instead of publishing into a
-            // channel that will never be delivered — the "looks healthy, delivers
-            // nothing" failure this RCA targets.
-            let mut fatal_reported = false;
-
-            while !stop.load(Ordering::Relaxed) {
-                let now = Instant::now();
-
-                if !fatal_reported {
-                    if let Some(message) = publisher.connection_fatal_error() {
-                        // Warn (not Failed): the worker keeps running so the broker
-                        // link can recover if credentials are fixed, but the error
-                        // is now loud in the log, health payload and last_error —
-                        // and the `acked` counter stays at zero so the box no longer
-                        // looks healthy while delivering nothing.
-                        log(
-                            &sender,
-                            LogLevel::Warning,
-                            format!("MQTT connection rejected by broker: {message}"),
-                        );
-                        last_error = Some(message);
-                        fatal_reported = true;
-                    }
-                }
-
-                let mut refreshed_this_iteration = false;
-                if last_full_refresh.elapsed() >= DEVICE_TABLE_KEEPALIVE_INTERVAL {
-                    last_full_refresh = Instant::now();
-                    last_resolve_attempt = Instant::now();
-                    refreshed_this_iteration = true;
-                    match proto.refresh_devices(&conn, &device_instances).await {
-                        Ok(refresh) => {
-                            let change = apply_refresh_state(
-                                &mut unresolved_devices,
-                                &mut device_backoffs,
-                                &refresh,
-                            );
-                            emit_refresh_state_change(
-                                &sender,
-                                &points,
-                                "device table keepalive",
-                                change,
-                                &mut point_status,
-                            );
-                        }
-                        Err(error) => {
-                            log(
-                                &sender,
-                                LogLevel::Warning,
-                                format!("Device table keepalive failed: {error:#}"),
-                            );
-                        }
-                    }
-                }
-
-                if !refreshed_this_iteration
-                    && !unresolved_devices.is_empty()
-                    && last_resolve_attempt.elapsed() >= DEVICE_RERESOLVE_INTERVAL
-                {
-                    last_resolve_attempt = Instant::now();
-                    let targets: Vec<u32> = unresolved_devices.iter().copied().collect();
-                    match proto.refresh_devices(&conn, &targets).await {
-                        Ok(refresh) => {
-                            let change = apply_refresh_state(
-                                &mut unresolved_devices,
-                                &mut device_backoffs,
-                                &refresh,
-                            );
-                            emit_refresh_state_change(
-                                &sender,
-                                &points,
-                                "device re-resolution",
-                                change,
-                                &mut point_status,
-                            );
-                        }
-                        Err(error) => {
-                            log(
-                                &sender,
-                                LogLevel::Warning,
-                                format!("Device re-resolution failed: {error:#}"),
-                            );
-                        }
-                    }
-                }
-
-                let due = due_points(
-                    now,
-                    &points,
-                    &unresolved_devices,
-                    &device_backoffs,
-                    &last_poll,
-                );
-
-                if !due.is_empty() {
-                    let polled_devices: HashSet<u32> =
-                        due.iter().filter_map(device_instance).collect();
-                    match proto.poll(&conn, &due).await {
-                        Ok(outcome) => {
-                            for message in update_device_backoffs(
-                                &mut device_backoffs,
-                                &polled_devices,
-                                &outcome,
-                                now,
-                                backoff_max,
-                                device_instance,
-                            ) {
-                                log(&sender, message.0, message.1);
-                            }
-                            for point in &due {
-                                last_poll.insert(PointIdentity::from_point(point), now);
-                            }
-                            for warning in outcome.warnings {
-                                log(&sender, LogLevel::Warning, warning);
-                            }
-                            cycle_failed_reads += outcome.failures.len();
-                            for failure in &outcome.failures {
-                                let id = PointIdentity::from_point(&failure.point);
-                                let status = point_status.entry(id).or_default();
-                                status.record_read_failure(&failure.error);
-                            }
-                            if !outcome.failures.is_empty() {
-                                let _ = sender.send(WorkerEvent::Failures(outcome.failures));
-                            }
-                            if !outcome.samples.is_empty() {
-                                let mut samples = outcome.samples;
-                                for sample in &mut samples {
-                                    sample.topic =
-                                        crate::topic::telemetry_topic(&mqtt, &sample.point);
-                                    let id = PointIdentity::from_point(&sample.point);
-                                    let status = point_status.entry(id).or_default();
-                                    status.record_sample(sample);
-                                }
-                                let stats = publish_samples(
-                                    &sender,
-                                    &mut publisher,
-                                    &mqtt,
-                                    &samples,
-                                    &mut point_status,
-                                );
-                                cycle_published += stats.published;
-                                cycle_failed_publishes += stats.failed;
-                                reconnects = stats.reconnects;
-                                acked = stats.acked;
-                                if stats.last_error.is_some() {
-                                    last_error = stats.last_error.clone();
-                                }
-                                let _ = sender.send(WorkerEvent::Samples(samples));
-                                let _ = sender.send(WorkerEvent::PublishStatus(stats));
-                            }
-                        }
-                        Err(error) => {
-                            last_error = Some(error.to_string());
-                            log(&sender, LogLevel::Error, format!("Poll failed: {error:#}"));
-                        }
-                    }
-                }
-
-                if last_health.elapsed() >= HEALTH_INTERVAL {
-                    let stale_points = point_status.values().filter(|s| s.stale).count();
-                    let snapshot = HealthSnapshot {
-                        published: cycle_published,
-                        acked,
-                        failed_reads: cycle_failed_reads,
-                        failed_publishes: cycle_failed_publishes,
-                        stale_points,
-                        reconnects,
-                        last_error: last_error.clone(),
-                    };
-                    if let Err(error) = publish_health(&mut publisher, &mqtt, snapshot).await {
-                        log(
-                            &sender,
-                            LogLevel::Warning,
-                            format!("Health publish failed: {error:#}"),
-                        );
-                    }
-                    last_health = Instant::now();
-                    cycle_published = 0;
-                    cycle_failed_reads = 0;
-                    cycle_failed_publishes = 0;
-                }
-
-                tokio::time::sleep(POLL_TICK).await;
-            }
-
-            let _ = sender.send(WorkerEvent::Lifecycle(RepublisherLifecycle::Stopping));
-            tokio::time::sleep(CLIENT_STOP_TIMEOUT).await;
-            let _ = sender.send(WorkerEvent::Lifecycle(RepublisherLifecycle::Stopped));
+            run_republisher(
+                &sender,
+                proto.as_ref(),
+                &conn,
+                &mqtt,
+                &points,
+                &stop,
+                &mut publisher,
+                LoopIntervals::default(),
+            )
+            .await;
         });
         if !completed {
             let _ = fail_sender.send(WorkerEvent::Lifecycle(RepublisherLifecycle::Failed(
@@ -962,6 +755,255 @@ pub fn spawn_republisher(
             )));
         }
     });
+}
+
+/// The continuous poll→publish loop, given an already-resolved (non-empty) point
+/// set and an already-built publisher. Emits `Running`, primes the device table,
+/// then loops on `intervals` until `stop` is set, closing with `Stopping`/`Stopped`.
+///
+/// Split out of [`spawn_republisher`] so the loop is testable without a broker: it
+/// is generic over the [`MqttPublisher`] trait (production passes the real
+/// `RumqttPublisher`) and takes its cadence via [`LoopIntervals`] (production uses
+/// [`LoopIntervals::default`], i.e. the module consts — unchanged behavior).
+#[allow(clippy::too_many_arguments)]
+async fn run_republisher<P: MqttPublisher + Send>(
+    sender: &Sender<WorkerEvent>,
+    proto: &dyn RepublishProtocol,
+    conn: &Addressing,
+    mqtt: &MqttConfig,
+    points: &[PointConfig],
+    stop: &AtomicBool,
+    publisher: &mut P,
+    intervals: LoopIntervals,
+) {
+    let backoff_max = device_backoff_max(conn);
+    let _ = sender.send(WorkerEvent::Lifecycle(RepublisherLifecycle::Running));
+
+    let device_instances = unique_device_instances(points);
+    let mut unresolved_devices: HashSet<u32> = HashSet::new();
+    match proto.refresh_devices(conn, &device_instances).await {
+        Ok(refresh) => {
+            if !refresh.unresolved.is_empty() {
+                log(
+                    sender,
+                    LogLevel::Warning,
+                    format!(
+                        "{} of {} device(s) not in I-Am cache; their points will be skipped (resolution retried every {}s)",
+                        refresh.unresolved.len(),
+                        device_instances.len(),
+                        intervals.reresolve.as_secs()
+                    ),
+                );
+            }
+            unresolved_devices = refresh.unresolved.into_iter().collect();
+        }
+        Err(error) => {
+            log(
+                sender,
+                LogLevel::Warning,
+                format!("Device table refresh failed: {error:#}"),
+            );
+        }
+    }
+
+    let mut last_poll: HashMap<PointIdentity, Instant> = HashMap::new();
+    let mut point_status: HashMap<PointIdentity, PointStatus> = HashMap::new();
+    record_unresolved_failures(sender, points, &unresolved_devices, &mut point_status);
+    let mut device_backoffs: HashMap<u32, DeviceBackoff> = HashMap::new();
+    let mut last_resolve_attempt = Instant::now();
+    let mut last_full_refresh = Instant::now();
+    let mut last_health = Instant::now()
+        .checked_sub(intervals.health)
+        .unwrap_or_else(Instant::now);
+    let mut cycle_published = 0usize;
+    let mut cycle_failed_reads = 0usize;
+    let mut cycle_failed_publishes = 0usize;
+    let mut reconnects = 0usize;
+    let mut acked = 0usize;
+    let mut last_error: Option<String> = None;
+    // A broker auth/config rejection (bad password, not authorized) never
+    // self-heals, so warn the operator once instead of publishing into a
+    // channel that will never be delivered — the "looks healthy, delivers
+    // nothing" failure this RCA targets.
+    let mut fatal_reported = false;
+
+    while !stop.load(Ordering::Relaxed) {
+        let now = Instant::now();
+
+        if !fatal_reported {
+            if let Some(message) = publisher.connection_fatal_error() {
+                // Warn (not Failed): the worker keeps running so the broker
+                // link can recover if credentials are fixed, but the error
+                // is now loud in the log, health payload and last_error —
+                // and the `acked` counter stays at zero so the box no longer
+                // looks healthy while delivering nothing.
+                log(
+                    sender,
+                    LogLevel::Warning,
+                    format!("MQTT connection rejected by broker: {message}"),
+                );
+                last_error = Some(message);
+                fatal_reported = true;
+            }
+        }
+
+        let mut refreshed_this_iteration = false;
+        if last_full_refresh.elapsed() >= intervals.keepalive {
+            last_full_refresh = Instant::now();
+            last_resolve_attempt = Instant::now();
+            refreshed_this_iteration = true;
+            match proto.refresh_devices(conn, &device_instances).await {
+                Ok(refresh) => {
+                    let change = apply_refresh_state(
+                        &mut unresolved_devices,
+                        &mut device_backoffs,
+                        &refresh,
+                    );
+                    emit_refresh_state_change(
+                        sender,
+                        points,
+                        "device table keepalive",
+                        change,
+                        &mut point_status,
+                    );
+                }
+                Err(error) => {
+                    log(
+                        sender,
+                        LogLevel::Warning,
+                        format!("Device table keepalive failed: {error:#}"),
+                    );
+                }
+            }
+        }
+
+        if !refreshed_this_iteration
+            && !unresolved_devices.is_empty()
+            && last_resolve_attempt.elapsed() >= intervals.reresolve
+        {
+            last_resolve_attempt = Instant::now();
+            let targets: Vec<u32> = unresolved_devices.iter().copied().collect();
+            match proto.refresh_devices(conn, &targets).await {
+                Ok(refresh) => {
+                    let change = apply_refresh_state(
+                        &mut unresolved_devices,
+                        &mut device_backoffs,
+                        &refresh,
+                    );
+                    emit_refresh_state_change(
+                        sender,
+                        points,
+                        "device re-resolution",
+                        change,
+                        &mut point_status,
+                    );
+                }
+                Err(error) => {
+                    log(
+                        sender,
+                        LogLevel::Warning,
+                        format!("Device re-resolution failed: {error:#}"),
+                    );
+                }
+            }
+        }
+
+        let due = due_points(
+            now,
+            points,
+            &unresolved_devices,
+            &device_backoffs,
+            &last_poll,
+        );
+
+        if !due.is_empty() {
+            let polled_devices: HashSet<u32> = due.iter().filter_map(device_instance).collect();
+            match proto.poll(conn, &due).await {
+                Ok(outcome) => {
+                    for message in update_device_backoffs(
+                        &mut device_backoffs,
+                        &polled_devices,
+                        &outcome,
+                        now,
+                        backoff_max,
+                        device_instance,
+                    ) {
+                        log(sender, message.0, message.1);
+                    }
+                    for point in &due {
+                        last_poll.insert(PointIdentity::from_point(point), now);
+                    }
+                    for warning in outcome.warnings {
+                        log(sender, LogLevel::Warning, warning);
+                    }
+                    cycle_failed_reads += outcome.failures.len();
+                    for failure in &outcome.failures {
+                        let id = PointIdentity::from_point(&failure.point);
+                        let status = point_status.entry(id).or_default();
+                        status.record_read_failure(&failure.error);
+                    }
+                    if !outcome.failures.is_empty() {
+                        let _ = sender.send(WorkerEvent::Failures(outcome.failures));
+                    }
+                    if !outcome.samples.is_empty() {
+                        let mut samples = outcome.samples;
+                        for sample in &mut samples {
+                            sample.topic = crate::topic::telemetry_topic(mqtt, &sample.point);
+                            let id = PointIdentity::from_point(&sample.point);
+                            let status = point_status.entry(id).or_default();
+                            status.record_sample(sample);
+                        }
+                        let stats =
+                            publish_samples(sender, publisher, mqtt, &samples, &mut point_status)
+                                .await;
+                        cycle_published += stats.published;
+                        cycle_failed_publishes += stats.failed;
+                        reconnects = stats.reconnects;
+                        acked = stats.acked;
+                        if stats.last_error.is_some() {
+                            last_error = stats.last_error.clone();
+                        }
+                        let _ = sender.send(WorkerEvent::Samples(samples));
+                        let _ = sender.send(WorkerEvent::PublishStatus(stats));
+                    }
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    log(sender, LogLevel::Error, format!("Poll failed: {error:#}"));
+                }
+            }
+        }
+
+        if last_health.elapsed() >= intervals.health {
+            let stale_points = point_status.values().filter(|s| s.stale).count();
+            let snapshot = HealthSnapshot {
+                published: cycle_published,
+                acked,
+                failed_reads: cycle_failed_reads,
+                failed_publishes: cycle_failed_publishes,
+                stale_points,
+                reconnects,
+                last_error: last_error.clone(),
+            };
+            if let Err(error) = publish_health(publisher, mqtt, snapshot).await {
+                log(
+                    sender,
+                    LogLevel::Warning,
+                    format!("Health publish failed: {error:#}"),
+                );
+            }
+            last_health = Instant::now();
+            cycle_published = 0;
+            cycle_failed_reads = 0;
+            cycle_failed_publishes = 0;
+        }
+
+        tokio::time::sleep(intervals.poll_tick).await;
+    }
+
+    let _ = sender.send(WorkerEvent::Lifecycle(RepublisherLifecycle::Stopping));
+    tokio::time::sleep(intervals.client_stop_timeout).await;
+    let _ = sender.send(WorkerEvent::Lifecycle(RepublisherLifecycle::Stopped));
 }
 
 #[cfg(test)]
@@ -1590,7 +1632,7 @@ mod tests {
     }
 
     /// An MQTT config that never reaches a broker: the event loop stays in
-    /// connect/backoff so `try_enqueue_sample` only fills the outbound channel.
+    /// connect/backoff so `publish` only fills the outbound channel.
     fn offline_mqtt(format: PayloadFormat) -> MqttConfig {
         MqttConfig {
             host: "127.0.0.1".into(),
@@ -1599,6 +1641,516 @@ mod tests {
             payload_format: format,
             ..MqttConfig::default()
         }
+    }
+
+    // ---- A broker-free MqttPublisher fake for driving run_republisher ---------
+    //
+    // Records the topics it publishes and can be told to fail every publish
+    // (exercising the loop's publish-failure and health-failure branches) or to
+    // report a fatal broker rejection (the "connection rejected" branch) — none of
+    // which need a real broker.
+    #[derive(Default)]
+    struct FakePublisher {
+        published: Vec<String>,
+        fail: bool,
+        fatal: Option<String>,
+    }
+
+    impl MqttPublisher for FakePublisher {
+        fn publish<'a>(
+            &'a mut self,
+            topic: &'a str,
+            _payload: Vec<u8>,
+            _retain: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                if self.fail {
+                    anyhow::bail!("fake publish failed");
+                }
+                self.published.push(topic.to_string());
+                Ok(())
+            })
+        }
+
+        fn connection_fatal_error(&self) -> Option<String> {
+            self.fatal.clone()
+        }
+    }
+
+    /// Tiny loop cadences so the whole loop (health, keepalive, re-resolve, poll,
+    /// shutdown grace) exercises in milliseconds instead of minutes.
+    fn tiny_intervals() -> LoopIntervals {
+        LoopIntervals {
+            health: Duration::from_millis(5),
+            reresolve: Duration::from_millis(2),
+            keepalive: Duration::from_millis(3),
+            poll_tick: Duration::from_millis(1),
+            client_stop_timeout: Duration::from_millis(1),
+        }
+    }
+
+    /// Drain the worker channel (non-blocking) into a Vec until `done` matches an
+    /// event or the deadline passes, then flip `stop` so a concurrently-`join!`ed
+    /// [`run_republisher`] returns. The short async sleep yields to that loop
+    /// future on the current-thread runtime.
+    async fn drive_until(
+        rx: &crossbeam_channel::Receiver<WorkerEvent>,
+        stop: &AtomicBool,
+        mut done: impl FnMut(&WorkerEvent) -> bool,
+    ) -> Vec<WorkerEvent> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut events = Vec::new();
+        loop {
+            while let Ok(event) = rx.try_recv() {
+                let matched = done(&event);
+                events.push(event);
+                if matched {
+                    stop.store(true, Ordering::Relaxed);
+                    return events;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                stop.store(true, Ordering::Relaxed);
+                return events;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// A protocol whose device-table refresh reports the targets unresolved on the
+    /// first call, then on every later call either resolves them (recovery) or
+    /// errors — driving the loop's keepalive / re-resolution success and failure
+    /// branches with an observable state transition.
+    struct RefreshScript {
+        calls: std::sync::atomic::AtomicUsize,
+        fail_after_first: bool,
+    }
+
+    impl RefreshScript {
+        fn recovering() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                fail_after_first: false,
+            }
+        }
+        fn failing() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                fail_after_first: true,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RepublishProtocol for RefreshScript {
+        fn capabilities(&self) -> &Capabilities {
+            scripted_caps()
+        }
+        async fn discover(&self, _conn: &Addressing) -> anyhow::Result<DiscoverOutcome> {
+            Ok(DiscoverOutcome::default())
+        }
+        async fn browse(
+            &self,
+            _conn: &Addressing,
+            _device: &DiscoveredDevice,
+        ) -> anyhow::Result<BrowseOutcome> {
+            Ok(BrowseOutcome::default())
+        }
+        async fn poll(
+            &self,
+            _conn: &Addressing,
+            _points: &[PointConfig],
+        ) -> anyhow::Result<PollOutcome> {
+            Ok(PollOutcome::default())
+        }
+        async fn refresh_devices(
+            &self,
+            _conn: &Addressing,
+            device_instances: &[u32],
+        ) -> anyhow::Result<RefreshOutcome> {
+            let n = self.calls.fetch_add(1, Ordering::Relaxed);
+            if n == 0 {
+                Ok(RefreshOutcome {
+                    resolved: Vec::new(),
+                    unresolved: device_instances.to_vec(),
+                })
+            } else if self.fail_after_first {
+                anyhow::bail!("refresh boom")
+            } else {
+                Ok(RefreshOutcome {
+                    resolved: device_instances.to_vec(),
+                    unresolved: Vec::new(),
+                })
+            }
+        }
+    }
+
+    // ---- run_republisher loop coverage (fake publisher, tiny intervals) -------
+
+    #[tokio::test]
+    async fn run_republisher_publishes_samples_and_health_then_stops() {
+        let (tx, rx) = unbounded();
+        let stop = AtomicBool::new(false);
+        let mut publisher = FakePublisher::default();
+        let conn = Addressing::new();
+        let mqtt = offline_mqtt(PayloadFormat::Scalar);
+        let points = vec![bacnet_point(10, true)];
+
+        let (_, mut events) = tokio::join!(
+            run_republisher(
+                &tx,
+                &ScriptedProto,
+                &conn,
+                &mqtt,
+                &points,
+                &stop,
+                &mut publisher,
+                tiny_intervals(),
+            ),
+            drive_until(&rx, &stop, |e| matches!(e, WorkerEvent::PublishStatus(_))),
+        );
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+
+        assert!(is_running(&events), "expected a Running lifecycle");
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Samples(s) if !s.is_empty())));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::PointPublish { error: None, .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::PublishStatus(_))));
+        // Health published (on the first tick) to the configured health topic, and
+        // at least one telemetry publish to a different topic.
+        assert!(
+            publisher.published.contains(&mqtt.health_topic),
+            "expected a health publish, got: {:?}",
+            publisher.published
+        );
+        assert!(publisher.published.iter().any(|t| *t != mqtt.health_topic));
+        // Graceful shutdown tail after stop.
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Lifecycle(RepublisherLifecycle::Stopping))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::Lifecycle(RepublisherLifecycle::Stopped))));
+    }
+
+    #[tokio::test]
+    async fn run_republisher_records_publish_and_health_failures() {
+        let (tx, rx) = unbounded();
+        let stop = AtomicBool::new(false);
+        // Every publish fails: sample publishes AND the health publish.
+        let mut publisher = FakePublisher {
+            fail: true,
+            ..FakePublisher::default()
+        };
+        let conn = Addressing::new();
+        let mqtt = offline_mqtt(PayloadFormat::Scalar);
+        let points = vec![bacnet_point(10, true)];
+
+        let (_, mut events) = tokio::join!(
+            run_republisher(
+                &tx,
+                &ScriptedProto,
+                &conn,
+                &mqtt,
+                &points,
+                &stop,
+                &mut publisher,
+                tiny_intervals(),
+            ),
+            drive_until(&rx, &stop, |e| matches!(e, WorkerEvent::PublishStatus(_))),
+        );
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+
+        // Publish failure path: a failed PointPublish and a non-zero failure count.
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::PointPublish { error: Some(_), .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorkerEvent::PublishStatus(s) if s.failed > 0)));
+        // Health publish failure is logged (non-fatal).
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Log(LogLevel::Warning, m) if m.contains("Health publish failed")
+        )));
+    }
+
+    #[tokio::test]
+    async fn run_republisher_reresolves_unresolved_device() {
+        let (tx, rx) = unbounded();
+        let stop = AtomicBool::new(false);
+        let mut publisher = FakePublisher::default();
+        let conn = Addressing::new();
+        let mqtt = offline_mqtt(PayloadFormat::Scalar);
+        let points = vec![bacnet_point(42, true)];
+        let proto = RefreshScript::recovering();
+        // Keepalive far away so the re-resolution branch (not the full keepalive)
+        // is what fires and recovers device 42.
+        let intervals = LoopIntervals {
+            keepalive: Duration::from_secs(60),
+            ..tiny_intervals()
+        };
+
+        let (_, mut events) = tokio::join!(
+            run_republisher(
+                &tx,
+                &proto,
+                &conn,
+                &mqtt,
+                &points,
+                &stop,
+                &mut publisher,
+                intervals,
+            ),
+            drive_until(&rx, &stop, |e| matches!(
+                e,
+                WorkerEvent::Log(LogLevel::Info, m) if m.contains("resolved during device re-resolution")
+            )),
+        );
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+
+        assert!(is_running(&events));
+        // Initial refresh reported device 42 unresolved: a warning + Failures.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Log(LogLevel::Warning, m) if m.contains("not in I-Am cache")
+        )));
+        assert!(events.iter().any(|e| matches!(e, WorkerEvent::Failures(f)
+            if f.iter().any(|x| x.error.contains("not in I-Am cache")))));
+        // Re-resolution then recovered it.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Log(LogLevel::Info, m) if m.contains("resolved during device re-resolution")
+        )));
+    }
+
+    #[tokio::test]
+    async fn run_republisher_keepalive_refresh_recovers_device() {
+        let (tx, rx) = unbounded();
+        let stop = AtomicBool::new(false);
+        let mut publisher = FakePublisher::default();
+        let conn = Addressing::new();
+        let mqtt = offline_mqtt(PayloadFormat::Scalar);
+        let points = vec![bacnet_point(42, true)];
+        let proto = RefreshScript::recovering();
+        // Tiny keepalive, far-away re-resolve: the full keepalive refresh is what
+        // fires (covering its Ok arm) and recovers device 42.
+        let intervals = LoopIntervals {
+            keepalive: Duration::from_millis(3),
+            reresolve: Duration::from_secs(60),
+            ..tiny_intervals()
+        };
+
+        let (_, mut events) = tokio::join!(
+            run_republisher(
+                &tx,
+                &proto,
+                &conn,
+                &mqtt,
+                &points,
+                &stop,
+                &mut publisher,
+                intervals,
+            ),
+            drive_until(&rx, &stop, |e| matches!(
+                e,
+                WorkerEvent::Log(LogLevel::Info, m) if m.contains("resolved during device table keepalive")
+            )),
+        );
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+
+        assert!(is_running(&events));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Log(LogLevel::Info, m) if m.contains("resolved during device table keepalive")
+        )));
+    }
+
+    #[tokio::test]
+    async fn run_republisher_logs_reresolution_failure() {
+        let (tx, rx) = unbounded();
+        let stop = AtomicBool::new(false);
+        let mut publisher = FakePublisher::default();
+        let conn = Addressing::new();
+        let mqtt = offline_mqtt(PayloadFormat::Scalar);
+        let points = vec![bacnet_point(42, true)];
+        // Initial refresh reports device 42 unresolved (so the re-resolve branch is
+        // eligible), then every later refresh errors — covering its Err arm.
+        let proto = RefreshScript::failing();
+        let intervals = LoopIntervals {
+            keepalive: Duration::from_secs(60),
+            ..tiny_intervals()
+        };
+
+        let (_, mut events) = tokio::join!(
+            run_republisher(
+                &tx,
+                &proto,
+                &conn,
+                &mqtt,
+                &points,
+                &stop,
+                &mut publisher,
+                intervals,
+            ),
+            drive_until(&rx, &stop, |e| matches!(
+                e,
+                WorkerEvent::Log(LogLevel::Warning, m) if m.contains("Device re-resolution failed")
+            )),
+        );
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+
+        assert!(is_running(&events));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Log(LogLevel::Warning, m) if m.contains("Device re-resolution failed")
+        )));
+    }
+
+    #[tokio::test]
+    async fn run_republisher_reports_poll_error() {
+        let (tx, rx) = unbounded();
+        let stop = AtomicBool::new(false);
+        let mut publisher = FakePublisher::default();
+        let mut conn = Addressing::new();
+        conn.insert("poll_err".into(), serde_json::json!(true));
+        let mqtt = offline_mqtt(PayloadFormat::Scalar);
+        let points = vec![bacnet_point(10, true)];
+
+        let (_, mut events) = tokio::join!(
+            run_republisher(
+                &tx,
+                &ScriptedProto,
+                &conn,
+                &mqtt,
+                &points,
+                &stop,
+                &mut publisher,
+                tiny_intervals(),
+            ),
+            drive_until(
+                &rx,
+                &stop,
+                |e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Poll failed"))
+            ),
+        );
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+
+        assert!(is_running(&events));
+        assert!(events.iter().any(
+            |e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Poll failed"))
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_republisher_logs_refresh_and_keepalive_failures() {
+        let (tx, rx) = unbounded();
+        let stop = AtomicBool::new(false);
+        let mut publisher = FakePublisher::default();
+        let mut conn = Addressing::new();
+        conn.insert("refresh_err".into(), serde_json::json!(true));
+        let mqtt = offline_mqtt(PayloadFormat::Scalar);
+        let points = vec![bacnet_point(10, true)];
+
+        // tiny keepalive => the keepalive refresh fires (and also fails) inside the
+        // loop, distinct from the initial pre-loop refresh failure.
+        let (_, mut events) = tokio::join!(
+            run_republisher(
+                &tx,
+                &ScriptedProto,
+                &conn,
+                &mqtt,
+                &points,
+                &stop,
+                &mut publisher,
+                tiny_intervals(),
+            ),
+            drive_until(
+                &rx,
+                &stop,
+                |e| matches!(e, WorkerEvent::Log(LogLevel::Warning, m) if m.contains("keepalive failed"))
+            ),
+        );
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+
+        assert!(is_running(&events));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Log(LogLevel::Warning, m) if m.contains("Device table refresh failed")
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Log(LogLevel::Warning, m) if m.contains("Device table keepalive failed")
+        )));
+    }
+
+    #[tokio::test]
+    async fn run_republisher_warns_once_on_fatal_broker_rejection() {
+        let (tx, rx) = unbounded();
+        let stop = AtomicBool::new(false);
+        let mut publisher = FakePublisher {
+            fatal: Some("not authorized".to_string()),
+            ..FakePublisher::default()
+        };
+        let conn = Addressing::new();
+        let mqtt = offline_mqtt(PayloadFormat::Scalar);
+        let points = vec![bacnet_point(10, true)];
+
+        let (_, mut events) = tokio::join!(
+            run_republisher(
+                &tx,
+                &ScriptedProto,
+                &conn,
+                &mqtt,
+                &points,
+                &stop,
+                &mut publisher,
+                tiny_intervals(),
+            ),
+            drive_until(
+                &rx,
+                &stop,
+                |e| matches!(e, WorkerEvent::Log(LogLevel::Warning, m) if m.contains("rejected by broker"))
+            ),
+        );
+        while let Ok(e) = rx.try_recv() {
+            events.push(e);
+        }
+
+        assert!(is_running(&events));
+        let rejections = events
+            .iter()
+            .filter(|e| matches!(e, WorkerEvent::Log(LogLevel::Warning, m) if m.contains("rejected by broker")))
+            .count();
+        // Warned, and only once (fatal_reported latches).
+        assert_eq!(
+            rejections, 1,
+            "fatal rejection should be warned exactly once"
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Log(LogLevel::Warning, m) if m.contains("not authorized")
+        )));
     }
 
     /// Collect worker events until `done` returns true or the deadline passes.
@@ -2114,7 +2666,8 @@ mod tests {
             &mqtt,
             std::slice::from_ref(&sample),
             &mut status,
-        );
+        )
+        .await;
         assert_eq!(stats.queued, 1);
         assert_eq!(stats.published, 1);
         assert_eq!(stats.failed, 0);
@@ -2151,7 +2704,7 @@ mod tests {
         let mut status = HashMap::new();
         status.insert(PointIdentity::from_point(&s1.point), PointStatus::default());
 
-        let stats = publish_samples(&tx, &mut publisher, &mqtt, &[s1, s2], &mut status);
+        let stats = publish_samples(&tx, &mut publisher, &mqtt, &[s1, s2], &mut status).await;
         assert_eq!(stats.queued, 2);
         assert_eq!(stats.published, 2);
         let publishes = rx
@@ -2179,7 +2732,7 @@ mod tests {
             })
             .collect();
 
-        let stats = publish_samples(&tx, &mut publisher, &mqtt, &samples, &mut status);
+        let stats = publish_samples(&tx, &mut publisher, &mqtt, &samples, &mut status).await;
         assert_eq!(stats.queued, 5000);
         assert!(stats.failed > 0, "channel-full drops should be counted");
         assert_eq!(stats.published + stats.failed, 5000);
@@ -2221,7 +2774,7 @@ mod tests {
             })
             .collect();
 
-        let stats = publish_samples(&tx, &mut publisher, &mqtt, &samples, &mut status);
+        let stats = publish_samples(&tx, &mut publisher, &mqtt, &samples, &mut status).await;
         assert_eq!(stats.queued, 6000);
         assert!(stats.failed > 0, "saturated channel should record failures");
         assert!(rx
