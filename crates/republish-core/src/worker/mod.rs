@@ -1373,9 +1373,10 @@ mod tests {
     fn emit_refresh_state_change_logs_both_transitions_and_records_failures() {
         let (tx, rx) = unbounded();
         let points = vec![bacnet_point(500, true)];
-        let mut change = RefreshStateChange::default();
-        change.newly_resolved = vec![100];
-        change.newly_unresolved = HashSet::from([500u32]);
+        let change = RefreshStateChange {
+            newly_resolved: vec![100],
+            newly_unresolved: HashSet::from([500u32]),
+        };
         let mut status = HashMap::new();
 
         emit_refresh_state_change(&tx, &points, "keepalive", change, &mut status);
@@ -2096,7 +2097,8 @@ mod tests {
         let mut status = HashMap::new();
         status.insert(PointIdentity::from_point(&sample.point), PointStatus::default());
 
-        let stats = publish_samples(&tx, &mut publisher, &mqtt, &[sample.clone()], &mut status);
+        let stats =
+            publish_samples(&tx, &mut publisher, &mqtt, std::slice::from_ref(&sample), &mut status);
         assert_eq!(stats.queued, 1);
         assert_eq!(stats.published, 1);
         assert_eq!(stats.failed, 0);
