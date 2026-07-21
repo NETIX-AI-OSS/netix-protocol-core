@@ -229,13 +229,19 @@ mod tests {
         };
         let point = PointConfig::default();
 
-        assert_eq!(proto.discover(&conn).await.unwrap(), DiscoverOutcome::default());
+        assert_eq!(
+            proto.discover(&conn).await.unwrap(),
+            DiscoverOutcome::default()
+        );
         assert_eq!(
             proto.browse(&conn, &device).await.unwrap(),
             BrowseOutcome::default()
         );
         assert_eq!(
-            proto.poll(&conn, std::slice::from_ref(&point)).await.unwrap(),
+            proto
+                .poll(&conn, std::slice::from_ref(&point))
+                .await
+                .unwrap(),
             PollOutcome::default()
         );
     }

@@ -799,7 +799,10 @@ mod tests {
             assert!(state.fatal.load(Ordering::Relaxed), "{code:?}");
             assert!(!state.connected.load(Ordering::Relaxed), "{code:?}");
             assert_eq!(state.reconnects.load(Ordering::Relaxed), 0, "{code:?}");
-            assert!(state.connection_fatal_error_for_test().is_some(), "{code:?}");
+            assert!(
+                state.connection_fatal_error_for_test().is_some(),
+                "{code:?}"
+            );
         }
     }
 
@@ -829,7 +832,9 @@ mod tests {
             ca_cert_path: Some(bogus_ca.to_string_lossy().into_owned()),
             ..MqttConfig::default()
         };
-        let error = build_transport(&cfg).err().expect("expected a CA parse error");
+        let error = build_transport(&cfg)
+            .err()
+            .expect("expected a CA parse error");
         assert!(
             format!("{error:#}").contains("no usable CA certificates"),
             "{error:#}"
@@ -938,8 +943,7 @@ mod tests {
         let mut publisher = RumqttPublisher::new(&cfg).unwrap();
 
         let overflow = OUTBOUND_CHANNEL_CAPACITY + 500;
-        let samples: Vec<PointSample> =
-            (0..overflow).map(|_| test_sample("Netix/Flood")).collect();
+        let samples: Vec<PointSample> = (0..overflow).map(|_| test_sample("Netix/Flood")).collect();
         let stats = publisher.enqueue_samples(&cfg, &samples);
 
         assert_eq!(stats.queued, overflow);

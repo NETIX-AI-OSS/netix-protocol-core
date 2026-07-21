@@ -986,9 +986,7 @@ mod tests {
         std::env::set_var(var, "loaded-from-env");
         fs::write(
             &path,
-            format!(
-                "[mqtt]\npassword_env = \"{var}\"\npassword = \"stale\"\n"
-            ),
+            format!("[mqtt]\npassword_env = \"{var}\"\npassword = \"stale\"\n"),
         )
         .unwrap();
         let loaded = load_from_path(&path);

@@ -163,7 +163,10 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].0, LogLevel::Warning);
         assert!(messages[0].1.contains("all reads failed"));
-        assert_eq!(backoffs.get(&7).unwrap().until, now + DEVICE_BACKOFF_INITIAL);
+        assert_eq!(
+            backoffs.get(&7).unwrap().until,
+            now + DEVICE_BACKOFF_INITIAL
+        );
 
         // Second failure: 10s * 2 = 20s, clamped down to the 15s max.
         update_device_backoffs(

@@ -391,10 +391,7 @@ mod tests {
 
     #[test]
     fn config_error_display_formats_each_variant() {
-        let io = ConfigError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "missing",
-        ));
+        let io = ConfigError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"));
         assert!(io.to_string().starts_with("io error:"), "{io}");
 
         let yaml_err = serde_yaml::from_str::<SimulatorConfig>("- not: a mapping").unwrap_err();
@@ -459,11 +456,8 @@ mod tests {
 
     #[test]
     fn ensure_config_file_creates_missing_parent_dirs() {
-        let dir = std::env::temp_dir().join(format!(
-            "simcore-ensure-{}-{}",
-            std::process::id(),
-            line!()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("simcore-ensure-{}-{}", std::process::id(), line!()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("x/y/config.yaml");
         assert!(SimulatorConfig::ensure_config_file(&path).unwrap());

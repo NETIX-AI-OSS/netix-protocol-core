@@ -969,8 +969,8 @@ mod tests {
     use super::*;
     use crate::config::PayloadFormat;
     use crate::model::{
-        BrowseOutcome, DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig, PollOutcome,
-        RefreshOutcome, TelemetryValue,
+        BrowseOutcome, DiscoverOutcome, DiscoveredDevice, DiscoveredPoint, PointConfig,
+        PollOutcome, RefreshOutcome, TelemetryValue,
     };
     use crossbeam_channel::unbounded;
     use std::sync::OnceLock;
@@ -1329,7 +1329,10 @@ mod tests {
         assert_eq!(device_backoff_max(&bad), Duration::from_secs(300));
 
         // Missing key -> the compile-time default.
-        assert_eq!(device_backoff_max(&Addressing::new()), DEFAULT_DEVICE_BACKOFF_MAX);
+        assert_eq!(
+            device_backoff_max(&Addressing::new()),
+            DEFAULT_DEVICE_BACKOFF_MAX
+        );
     }
 
     #[test]
@@ -1337,7 +1340,7 @@ mod tests {
         let points = vec![
             bacnet_point(30, true),
             bacnet_point(10, true),
-            bacnet_point(30, true), // duplicate
+            bacnet_point(30, true),  // duplicate
             bacnet_point(20, false), // disabled -> excluded
         ];
         assert_eq!(unique_device_instances(&points), vec![10, 30]);
@@ -1386,7 +1389,9 @@ mod tests {
         let mut saw_failures = false;
         while let Ok(event) = rx.try_recv() {
             match event {
-                WorkerEvent::Log(LogLevel::Info, message) if message.contains("resolved during") => {
+                WorkerEvent::Log(LogLevel::Info, message)
+                    if message.contains("resolved during") =>
+                {
                     saw_resolved_log = true;
                 }
                 WorkerEvent::Log(LogLevel::Warning, message)
@@ -1395,14 +1400,19 @@ mod tests {
                     saw_unresolved_log = true;
                 }
                 WorkerEvent::Failures(failures) => {
-                    saw_failures = failures.iter().any(|f| f.error.contains("not in I-Am cache"));
+                    saw_failures = failures
+                        .iter()
+                        .any(|f| f.error.contains("not in I-Am cache"));
                 }
                 _ => {}
             }
         }
         assert!(saw_resolved_log, "expected a resolved Info log");
         assert!(saw_unresolved_log, "expected an unresolved Warning log");
-        assert!(saw_failures, "expected Failures for the newly-unresolved device");
+        assert!(
+            saw_failures,
+            "expected Failures for the newly-unresolved device"
+        );
         // The unresolved point's status got a recorded read failure.
         let id = PointIdentity::from_point(&points[0]);
         assert_eq!(status.get(&id).unwrap().consecutive_failures, 1);
@@ -1645,9 +1655,9 @@ mod tests {
                 .any(|e| matches!(e, WorkerEvent::Devices(o) if o.devices.len() == 2)),
             "expected 2 discovered devices"
         );
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Warning, m) if m == "discover warning")));
+        assert!(events.iter().any(
+            |e| matches!(e, WorkerEvent::Log(LogLevel::Warning, m) if m == "discover warning")
+        ));
         assert!(is_finished(&events, "Discovery found 2 device"));
     }
 
@@ -1661,9 +1671,9 @@ mod tests {
         let events = collect_until(&rx, Duration::from_secs(5), |e| {
             matches!(e, WorkerEvent::Finished(_))
         });
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Discovery failed"))));
+        assert!(events.iter().any(
+            |e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Discovery failed"))
+        ));
         assert!(is_finished(&events, "Discovery failed"));
     }
 
@@ -1709,9 +1719,9 @@ mod tests {
         let events = collect_until(&rx, Duration::from_secs(5), |e| {
             matches!(e, WorkerEvent::Finished(_))
         });
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Browse failed"))));
+        assert!(events.iter().any(
+            |e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Browse failed"))
+        ));
         assert!(is_finished(&events, "Browse failed"));
     }
 
@@ -1862,9 +1872,9 @@ mod tests {
         let events = collect_until(&rx, Duration::from_secs(5), |e| {
             matches!(e, WorkerEvent::Finished(_))
         });
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Poll failed"))));
+        assert!(events.iter().any(
+            |e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Poll failed"))
+        ));
         assert!(is_finished(&events, "Poll once failed"));
     }
 
@@ -2046,9 +2056,7 @@ mod tests {
             e,
             WorkerEvent::Log(LogLevel::Warning, m) if m.contains("not in I-Am cache")
         )));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, WorkerEvent::Failures(f)
+        assert!(events.iter().any(|e| matches!(e, WorkerEvent::Failures(f)
                 if f.iter().any(|x| x.error.contains("not in I-Am cache")))));
     }
 
@@ -2095,10 +2103,18 @@ mod tests {
             timestamp_ms: 1,
         };
         let mut status = HashMap::new();
-        status.insert(PointIdentity::from_point(&sample.point), PointStatus::default());
+        status.insert(
+            PointIdentity::from_point(&sample.point),
+            PointStatus::default(),
+        );
 
-        let stats =
-            publish_samples(&tx, &mut publisher, &mqtt, std::slice::from_ref(&sample), &mut status);
+        let stats = publish_samples(
+            &tx,
+            &mut publisher,
+            &mqtt,
+            std::slice::from_ref(&sample),
+            &mut status,
+        );
         assert_eq!(stats.queued, 1);
         assert_eq!(stats.published, 1);
         assert_eq!(stats.failed, 0);
@@ -2167,7 +2183,11 @@ mod tests {
         assert_eq!(stats.queued, 5000);
         assert!(stats.failed > 0, "channel-full drops should be counted");
         assert_eq!(stats.published + stats.failed, 5000);
-        assert!(stats.last_error.as_deref().unwrap().contains("failed to enqueue"));
+        assert!(stats
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("failed to enqueue"));
         // A publish-failure event and a recorded publish error surfaced.
         assert!(rx
             .try_iter()
@@ -2313,13 +2333,15 @@ mod tests {
             false,
             Arc::clone(&stop),
         );
-        let events = collect_until(&rx, Duration::from_secs(6), |e| {
-            matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Poll failed"))
-        });
+        let events = collect_until(
+            &rx,
+            Duration::from_secs(6),
+            |e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Poll failed")),
+        );
         stop.store(true, Ordering::Relaxed);
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Poll failed"))));
+        assert!(events.iter().any(
+            |e| matches!(e, WorkerEvent::Log(LogLevel::Error, m) if m.contains("Poll failed"))
+        ));
     }
 
     #[test]
