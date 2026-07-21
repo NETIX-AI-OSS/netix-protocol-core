@@ -37,6 +37,14 @@ pub struct AppConfig {
     /// nothing — see [`crate::worker::spawn_republisher`].
     #[serde(default)]
     pub discover_on_start: bool,
+    /// Provenance marker for a config emitted by the simulator: the SHA-256 hex
+    /// of the canonical simulator config bytes it was generated from (see
+    /// `sim-core::republisher_export`). Absent for hand-written or GUI-authored
+    /// configs. When present it lets a loader detect *drift* — the simulator
+    /// config changed but this republisher config was never regenerated, so its
+    /// addresses are stale — via [`AppConfig::check_sim_config_drift`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim_config_checksum: Option<String>,
     #[serde(default)]
     pub ui: UiPreferences,
 }
@@ -170,6 +178,7 @@ impl Default for AppConfig {
             mqtt: MqttConfig::default(),
             points: Vec::new(),
             discover_on_start: false,
+            sim_config_checksum: None,
             ui: UiPreferences::default(),
         }
     }
@@ -203,6 +212,39 @@ impl AppConfig {
             }
         }
         self.version = CURRENT_CONFIG_VERSION;
+    }
+
+    /// The stored simulator-config provenance checksum, if this config was
+    /// emitted by the simulator (see [`sim_config_checksum`](Self::sim_config_checksum)).
+    pub fn sim_config_checksum(&self) -> Option<&str> {
+        self.sim_config_checksum.as_deref()
+    }
+
+    /// Detect simulator-config drift: compare the stored
+    /// [`sim_config_checksum`](Self::sim_config_checksum) (the simulator config
+    /// this republisher config was emitted from) against `current_checksum`
+    /// (the checksum of the simulator config in effect now). On mismatch this
+    /// logs a `Warning` and returns the message; the caller decides what to do.
+    ///
+    /// This is intentionally **non-fatal**: it returns `None` (and logs nothing)
+    /// when no checksum is stored — a hand-written or GUI-authored config has no
+    /// simulator provenance to drift from — and when the checksums match. A
+    /// mismatch means the simulator config changed but this config was never
+    /// regenerated, so its addresses may be stale; regenerate to resync.
+    pub fn check_sim_config_drift(&self, current_checksum: &str) -> Option<String> {
+        let stored = self.sim_config_checksum.as_deref()?;
+        if stored == current_checksum {
+            return None;
+        }
+        let message = format!(
+            "Simulator config drift: this republisher config was emitted from a \
+             simulator config with checksum {stored}, but the current simulator \
+             config hashes to {current_checksum}. The republisher may be polling \
+             stale addresses — regenerate the config (simulator \
+             --emit-republisher-config) so BACnet addresses stay in sync."
+        );
+        log::warn!("{message}");
+        Some(message)
     }
 
     pub fn sanitized_for_save(&self) -> Self {
@@ -632,6 +674,40 @@ mod tests {
             ..PointConfig::default()
         });
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn sim_config_checksum_round_trips_and_detects_drift() {
+        // No provenance stored -> nothing to drift from, never warns.
+        let plain = AppConfig::default();
+        assert_eq!(plain.sim_config_checksum(), None);
+        assert_eq!(plain.check_sim_config_drift("anything"), None);
+
+        // Stored checksum survives a save/load round-trip.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        let config = AppConfig {
+            sim_config_checksum: Some("abc123".into()),
+            ..AppConfig::default()
+        };
+        save_to_path(&path, &config).unwrap();
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("sim_config_checksum = \"abc123\""),
+            "emitted toml must carry the provenance checksum, got:\n{raw}"
+        );
+        let loaded = load_from_path(&path).unwrap();
+        assert_eq!(loaded.sim_config_checksum(), Some("abc123"));
+
+        // Matching checksum -> no drift, no warning message.
+        assert_eq!(loaded.check_sim_config_drift("abc123"), None);
+        // A different current checksum -> drift is detected and reported.
+        let warning = loaded
+            .check_sim_config_drift("def456")
+            .expect("mismatching checksum must be flagged as drift");
+        assert!(warning.contains("drift"));
+        assert!(warning.contains("abc123"));
+        assert!(warning.contains("def456"));
     }
 
     #[test]

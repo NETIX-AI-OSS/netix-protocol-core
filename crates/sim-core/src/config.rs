@@ -115,6 +115,25 @@ impl SimulatorConfig {
             self.protocols.clone()
         }
     }
+
+    /// Canonical, order-independent serialisation of this simulator config.
+    ///
+    /// Round-tripping through [`serde_json::Value`] normalises every map
+    /// (notably `templates`, a `HashMap` with nondeterministic iteration order)
+    /// into sorted-key JSON objects, so two logically identical configs always
+    /// produce identical bytes — the property a provenance checksum needs.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, ConfigError> {
+        let value = serde_json::to_value(self).map_err(ConfigError::Serialize)?;
+        serde_json::to_vec(&value).map_err(ConfigError::Serialize)
+    }
+
+    /// SHA-256 hex of this config's [`canonical_bytes`](Self::canonical_bytes) —
+    /// the `sim_config_checksum` provenance marker stamped onto an emitted
+    /// republisher config, and the value to compare a loaded config against to
+    /// detect drift (see `republish_core::config::AppConfig::check_sim_config_drift`).
+    pub fn checksum(&self) -> Result<String, ConfigError> {
+        Ok(republish_core::checksum::sha256_hex(&self.canonical_bytes()?))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +162,9 @@ pub enum ConfigError {
         count: u32,
         block: u32,
     },
+    /// The config could not be serialised to its canonical bytes (e.g. when
+    /// computing the `sim_config_checksum` provenance marker for an emit).
+    Serialize(serde_json::Error),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -160,6 +182,7 @@ impl std::fmt::Display for ConfigError {
                 "instance count {} for template '{}' exceeds per_template_block {}",
                 count, template, block
             ),
+            ConfigError::Serialize(e) => write!(f, "serialize error: {}", e),
         }
     }
 }

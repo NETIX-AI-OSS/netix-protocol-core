@@ -51,7 +51,16 @@ pub fn emit_republisher_config(
          # Regenerate whenever the simulator config changes so BACnet addresses stay in sync.\n\n",
     );
     out.push_str("version = 2\n");
-    out.push_str("protocol = \"bacnet\"\n\n");
+    out.push_str("protocol = \"bacnet\"\n");
+    // Provenance marker: the checksum of the simulator config this file was
+    // emitted from. A loader (`AppConfig::check_sim_config_drift`) compares it
+    // against the current simulator config's checksum to detect drift — the sim
+    // config changed but this file was never regenerated, so its addresses are
+    // stale. Top-level key, so it must precede every `[table]` below.
+    out.push_str(&format!(
+        "sim_config_checksum = \"{}\"\n\n",
+        toml_escape(&config.checksum()?)
+    ));
 
     out.push_str("[connections.bacnet]\n");
     out.push_str("discover_all_interfaces = true\n");
@@ -227,5 +236,37 @@ mod tests {
         // one addressing table per point.
         assert_eq!(toml.matches("[[points]]").count(), 2);
         assert_eq!(toml.matches("[points.addressing]").count(), 2);
+    }
+
+    #[test]
+    fn emits_sim_config_checksum_that_round_trips_and_detects_drift() {
+        use republish_core::config::AppConfig;
+
+        let cfg = config();
+        let toml = emit_republisher_config(&cfg, "mqtt.example").unwrap();
+
+        // The emitted config carries the provenance checksum of the sim config.
+        let expected = cfg.checksum().unwrap();
+        assert!(
+            toml.contains(&format!("sim_config_checksum = \"{expected}\"")),
+            "emitted toml must stamp the sim_config_checksum, got:\n{toml}"
+        );
+        // Canonical hashing is deterministic across calls.
+        assert_eq!(expected, cfg.checksum().unwrap());
+
+        // A loader parses the marker and finds no drift against the same config.
+        let loaded: AppConfig = toml::from_str(&toml).unwrap();
+        assert_eq!(loaded.sim_config_checksum(), Some(expected.as_str()));
+        assert_eq!(loaded.check_sim_config_drift(&expected), None);
+
+        // Mutate the sim config -> its checksum changes -> drift is detected.
+        let mut drifted = cfg.clone();
+        drifted.instances[0].count = 3;
+        let new_checksum = drifted.checksum().unwrap();
+        assert_ne!(new_checksum, expected);
+        assert!(
+            loaded.check_sim_config_drift(&new_checksum).is_some(),
+            "a changed sim config must be flagged as drift"
+        );
     }
 }
