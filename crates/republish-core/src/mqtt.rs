@@ -162,6 +162,37 @@ fn connack_error_message(code: ConnectReturnCode) -> String {
     )
 }
 
+/// Apply one polled event-loop result to the shared connection state. This is the
+/// per-iteration body of the spawned poll loop, factored out so the packet-handling
+/// arms are unit-testable without a live broker. Returns `Some(delay)` when the poll
+/// errored and the caller must back off before polling again; `None` otherwise.
+fn apply_poll(
+    state: &ConnectionState,
+    backoff: &mut ReconnectBackoff,
+    polled: std::result::Result<Event, rumqttc::ConnectionError>,
+) -> Option<Duration> {
+    match polled {
+        Ok(Event::Incoming(Packet::ConnAck(connack))) => {
+            // Inspect the return code: a non-Success code (bad auth, not
+            // authorized, …) is a fatal rejection, NOT a healthy connection.
+            // record_connack sets the fatal error state.
+            state.record_connack(connack.code);
+            backoff.reset();
+            None
+        }
+        Ok(Event::Incoming(Packet::PubAck(_))) => {
+            // Broker confirmed a QoS 1 delivery — the honest counter.
+            state.record_puback();
+            None
+        }
+        Ok(_) => None,
+        Err(error) => {
+            state.record_error(error.to_string());
+            Some(backoff.next_delay())
+        }
+    }
+}
+
 pub struct RumqttPublisher {
     client: AsyncClient,
     state: Arc<ConnectionState>,
@@ -192,23 +223,10 @@ impl RumqttPublisher {
             async move {
                 let mut backoff = ReconnectBackoff::default();
                 loop {
-                    match eventloop.poll().await {
-                        Ok(Event::Incoming(Packet::ConnAck(connack))) => {
-                            // Inspect the return code: a non-Success code (bad auth,
-                            // not authorized, …) is a fatal rejection, NOT a healthy
-                            // connection. record_connack sets the fatal error state.
-                            state.record_connack(connack.code);
-                            backoff.reset();
-                        }
-                        Ok(Event::Incoming(Packet::PubAck(_))) => {
-                            // Broker confirmed a QoS 1 delivery — the honest counter.
-                            state.record_puback();
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
-                            state.record_error(error.to_string());
-                            sleep(backoff.next_delay()).await;
-                        }
+                    // apply_poll handles one polled result and returns Some(delay)
+                    // only when the poll failed and we must back off before retrying.
+                    if let Some(delay) = apply_poll(&state, &mut backoff, eventloop.poll().await) {
+                        sleep(delay).await;
                     }
                 }
             }
@@ -237,13 +255,9 @@ impl RumqttPublisher {
         let mut stats = PublishStats::empty();
         for sample in samples {
             stats.queued += 1;
-            let payload = match serde_json::to_vec(&sample.value.as_json_value()) {
-                Ok(payload) => payload,
-                Err(error) => {
-                    stats.record_failure(error.to_string());
-                    continue;
-                }
-            };
+            // as_json_value() yields a serde_json::Value; serializing one is infallible.
+            let payload = serde_json::to_vec(&sample.value.as_json_value())
+                .expect("serde_json::Value always serializes");
             match self.enqueue(&sample.topic, payload, config.retain) {
                 Ok(()) => stats.published += 1,
                 Err(error) => stats.record_failure(error.to_string()),
@@ -324,13 +338,9 @@ pub async fn publish_samples<P: MqttPublisher + Send>(
 
     for sample in samples {
         stats.queued += 1;
-        let payload = match serde_json::to_vec(&sample.value.as_json_value()) {
-            Ok(payload) => payload,
-            Err(error) => {
-                stats.record_failure(error.to_string());
-                continue;
-            }
-        };
+        // as_json_value() yields a serde_json::Value; serializing one is infallible.
+        let payload = serde_json::to_vec(&sample.value.as_json_value())
+            .expect("serde_json::Value always serializes");
 
         match publisher
             .publish(&sample.topic, payload, config.retain)
@@ -367,7 +377,8 @@ pub async fn publish_health<P: MqttPublisher + Send>(
     publisher
         .publish(
             &config.health_topic,
-            serde_json::to_vec(&payload).context("failed to encode health payload")?,
+            // payload is a serde_json::Value; serializing one is infallible.
+            serde_json::to_vec(&payload).expect("serde_json::Value always serializes"),
             true,
         )
         .await
@@ -627,6 +638,109 @@ mod tests {
         state.record_puback();
         state.record_puback();
         assert_eq!(state.acked.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn apply_poll_connack_success_connects_and_resets_backoff() {
+        let state = ConnectionState::default();
+        let mut backoff = ReconnectBackoff::default();
+        // Advance the backoff so we can prove the successful CONNACK rewinds it.
+        backoff.next_delay();
+        backoff.next_delay();
+
+        let event = Event::Incoming(Packet::ConnAck(rumqttc::ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+        }));
+        let delay = apply_poll(&state, &mut backoff, Ok(event));
+
+        assert!(delay.is_none());
+        assert!(state.connected.load(Ordering::Relaxed));
+        assert!(state.connection_fatal_error_for_test().is_none());
+        // Backoff was reset back to the initial delay.
+        assert_eq!(backoff.next_delay(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn apply_poll_connack_failure_sets_fatal_error() {
+        let state = ConnectionState::default();
+        let mut backoff = ReconnectBackoff::default();
+
+        let event = Event::Incoming(Packet::ConnAck(rumqttc::ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::NotAuthorized,
+        }));
+        let delay = apply_poll(&state, &mut backoff, Ok(event));
+
+        assert!(delay.is_none());
+        assert!(!state.connected.load(Ordering::Relaxed));
+        assert!(state
+            .connection_fatal_error_for_test()
+            .unwrap()
+            .contains("not authorized"));
+    }
+
+    #[test]
+    fn apply_poll_puback_increments_acked() {
+        let state = ConnectionState::default();
+        let mut backoff = ReconnectBackoff::default();
+
+        let event = Event::Incoming(Packet::PubAck(rumqttc::PubAck::new(1)));
+        let delay = apply_poll(&state, &mut backoff, Ok(event));
+
+        assert!(delay.is_none());
+        assert_eq!(state.acked.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn apply_poll_ignores_other_events() {
+        let state = ConnectionState::default();
+        let mut backoff = ReconnectBackoff::default();
+
+        // An unrelated incoming packet is a no-op: nothing recorded, no backoff.
+        let event = Event::Incoming(Packet::PingResp);
+        let delay = apply_poll(&state, &mut backoff, Ok(event));
+
+        assert!(delay.is_none());
+        assert!(!state.connected.load(Ordering::Relaxed));
+        assert_eq!(state.acked.load(Ordering::Relaxed), 0);
+        assert_eq!(state.reconnects.load(Ordering::Relaxed), 0);
+        assert!(state.last_error.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn apply_poll_error_records_and_returns_backoff_delay() {
+        let state = ConnectionState::default();
+        state.connected.store(true, Ordering::Relaxed);
+        let mut backoff = ReconnectBackoff::default();
+
+        let delay = apply_poll(
+            &state,
+            &mut backoff,
+            Err(rumqttc::ConnectionError::NetworkTimeout),
+        );
+
+        // A poll error yields a sleep delay and records the error as a reconnect.
+        assert_eq!(delay, Some(Duration::from_secs(1)));
+        assert!(!state.connected.load(Ordering::Relaxed));
+        assert_eq!(state.reconnects.load(Ordering::Relaxed), 1);
+        assert!(state
+            .last_error
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap()
+            .contains("timeout"));
+        // A transport error is not a fatal auth/config rejection.
+        assert!(state.connection_fatal_error_for_test().is_none());
+
+        // The next error advances the backoff (proving next_delay was consumed).
+        let delay = apply_poll(
+            &state,
+            &mut backoff,
+            Err(rumqttc::ConnectionError::NetworkTimeout),
+        );
+        assert_eq!(delay, Some(Duration::from_secs(2)));
     }
 
     #[tokio::test]
@@ -902,6 +1016,28 @@ mod tests {
             .await
             .unwrap();
         // Drop aborts the background task.
+    }
+
+    #[tokio::test]
+    async fn connection_fatal_error_surfaces_when_state_is_fatal() {
+        // The fatal branch of the public getter is only entered after a broker
+        // *rejects* the connection (a non-Success CONNACK). Arrange that documented
+        // precondition through record_fatal (the same path record_connack uses) and
+        // exercise the real public method — no broker required.
+        let cfg = MqttConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            use_tls: false,
+            ..MqttConfig::default()
+        };
+        let publisher = RumqttPublisher::new(&cfg).unwrap();
+        assert!(publisher.connection_fatal_error().is_none());
+
+        publisher.state.record_fatal("bad username or password");
+        assert_eq!(
+            publisher.connection_fatal_error().as_deref(),
+            Some("bad username or password")
+        );
     }
 
     #[tokio::test]
