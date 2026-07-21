@@ -253,8 +253,11 @@ fn publish_samples(
     }
 
     stats.reconnects = publisher.reconnect_count();
+    stats.acked = publisher.acked_count();
     if stats.last_error.is_none() {
-        stats.last_error = publisher.last_connection_error();
+        stats.last_error = publisher
+            .connection_fatal_error()
+            .or_else(|| publisher.last_connection_error());
     }
     stats
 }
@@ -347,8 +350,11 @@ fn publish_envelope(
     }
 
     stats.reconnects = publisher.reconnect_count();
+    stats.acked = publisher.acked_count();
     if stats.last_error.is_none() {
-        stats.last_error = publisher.last_connection_error();
+        stats.last_error = publisher
+            .connection_fatal_error()
+            .or_else(|| publisher.last_connection_error());
     }
     stats
 }
@@ -635,10 +641,34 @@ pub fn spawn_republisher(
             let mut cycle_failed_reads = 0usize;
             let mut cycle_failed_publishes = 0usize;
             let mut reconnects = 0usize;
+            let mut acked = 0usize;
             let mut last_error: Option<String> = None;
+            // A broker auth/config rejection (bad password, not authorized) never
+            // self-heals, so warn the operator once instead of publishing into a
+            // channel that will never be delivered — the "looks healthy, delivers
+            // nothing" failure this RCA targets.
+            let mut fatal_reported = false;
 
             while !stop.load(Ordering::Relaxed) {
                 let now = Instant::now();
+
+                if !fatal_reported {
+                    if let Some(message) = publisher.connection_fatal_error() {
+                        // Warn (not Failed): the worker keeps running so the broker
+                        // link can recover if credentials are fixed, but the error
+                        // is now loud in the log, health payload and last_error —
+                        // and the `acked` counter stays at zero so the box no longer
+                        // looks healthy while delivering nothing.
+                        log(
+                            &sender,
+                            LogLevel::Warning,
+                            format!("MQTT connection rejected by broker: {message}"),
+                        );
+                        last_error = Some(message);
+                        fatal_reported = true;
+                    }
+                }
+
                 let mut refreshed_this_iteration = false;
                 if last_full_refresh.elapsed() >= DEVICE_TABLE_KEEPALIVE_INTERVAL {
                     last_full_refresh = Instant::now();
@@ -757,6 +787,7 @@ pub fn spawn_republisher(
                                 cycle_published += stats.published;
                                 cycle_failed_publishes += stats.failed;
                                 reconnects = stats.reconnects;
+                                acked = stats.acked;
                                 if stats.last_error.is_some() {
                                     last_error = stats.last_error.clone();
                                 }
@@ -775,6 +806,7 @@ pub fn spawn_republisher(
                     let stale_points = point_status.values().filter(|s| s.stale).count();
                     let snapshot = HealthSnapshot {
                         published: cycle_published,
+                        acked,
                         failed_reads: cycle_failed_reads,
                         failed_publishes: cycle_failed_publishes,
                         stale_points,

@@ -1,7 +1,9 @@
 use crate::config::MqttConfig;
 use crate::model::{PointSample, PublishStats};
 use anyhow::{anyhow, Context, Result};
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, TlsConfiguration, Transport};
+use rumqttc::{
+    AsyncClient, ConnectReturnCode, Event, MqttOptions, Packet, QoS, TlsConfiguration, Transport,
+};
 use serde_json::json;
 use std::fs;
 use std::future::Future;
@@ -58,7 +60,10 @@ impl ReconnectBackoff {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HealthSnapshot {
+    /// Samples enqueued to the outbound channel (local attempts, not delivery).
     pub published: usize,
+    /// Broker-confirmed deliveries (running total of QoS 1 PubAcks).
+    pub acked: usize,
     pub failed_reads: usize,
     pub failed_publishes: usize,
     pub stale_points: usize,
@@ -80,15 +85,46 @@ impl HealthSnapshot {
 struct ConnectionState {
     connected: AtomicBool,
     reconnects: AtomicUsize,
+    /// Running total of broker-confirmed QoS 1 deliveries (PubAcks).
+    acked: AtomicUsize,
+    /// Sticky flag set when the broker *rejects* the connection with a non-Success
+    /// CONNACK return code (bad username/password, not authorized, …). Unlike a
+    /// transport drop this will not self-heal on retry, so it is surfaced as a
+    /// fatal connection error rather than counted as a reconnect.
+    fatal: AtomicBool,
     last_error: Mutex<Option<String>>,
 }
 
 impl ConnectionState {
-    fn record_connack(&self) {
-        self.connected.store(true, Ordering::Relaxed);
-        if let Ok(mut last_error) = self.last_error.lock() {
-            *last_error = None;
+    /// Handle a broker CONNACK. A `Success` code means the link is live; any other
+    /// code is a fatal auth/config rejection — the connection is NOT counted as up
+    /// (see [`ConnectionState::record_fatal`]).
+    fn record_connack(&self, code: ConnectReturnCode) {
+        if code == ConnectReturnCode::Success {
+            self.connected.store(true, Ordering::Relaxed);
+            self.fatal.store(false, Ordering::Relaxed);
+            if let Ok(mut last_error) = self.last_error.lock() {
+                *last_error = None;
+            }
+        } else {
+            self.record_fatal(connack_error_message(code));
         }
+    }
+
+    /// Record a fatal, non-self-healing connection error (broker rejected the
+    /// connection). Marks the link down and sets the sticky `fatal` flag so the
+    /// error is surfaced to the operator instead of being silently retried.
+    fn record_fatal(&self, error: impl Into<String>) {
+        self.connected.store(false, Ordering::Relaxed);
+        self.fatal.store(true, Ordering::Relaxed);
+        if let Ok(mut last_error) = self.last_error.lock() {
+            *last_error = Some(error.into());
+        }
+    }
+
+    /// Count a broker-confirmed QoS 1 delivery.
+    fn record_puback(&self) {
+        self.acked.fetch_add(1, Ordering::Relaxed);
     }
 
     fn record_error(&self, error: impl Into<String>) {
@@ -99,6 +135,31 @@ impl ConnectionState {
             *last_error = Some(error.into());
         }
     }
+
+    #[cfg(test)]
+    fn connection_fatal_error_for_test(&self) -> Option<String> {
+        if self.fatal.load(Ordering::Relaxed) {
+            self.last_error.lock().ok().and_then(|value| value.clone())
+        } else {
+            None
+        }
+    }
+}
+
+/// Human-readable explanation for a non-Success MQTT CONNACK return code.
+fn connack_error_message(code: ConnectReturnCode) -> String {
+    let reason = match code {
+        ConnectReturnCode::Success => "connection accepted",
+        ConnectReturnCode::RefusedProtocolVersion => "unacceptable protocol version",
+        ConnectReturnCode::BadClientId => "client identifier rejected",
+        ConnectReturnCode::ServiceUnavailable => "service unavailable",
+        ConnectReturnCode::BadUserNamePassword => "bad username or password",
+        ConnectReturnCode::NotAuthorized => "not authorized",
+    };
+    format!(
+        "MQTT broker refused the connection: {reason} (CONNACK {code:?}); \
+         check credentials and broker permissions"
+    )
 }
 
 pub struct RumqttPublisher {
@@ -132,9 +193,16 @@ impl RumqttPublisher {
                 let mut backoff = ReconnectBackoff::default();
                 loop {
                     match eventloop.poll().await {
-                        Ok(Event::Incoming(Packet::ConnAck(_))) => {
-                            state.record_connack();
+                        Ok(Event::Incoming(Packet::ConnAck(connack))) => {
+                            // Inspect the return code: a non-Success code (bad auth,
+                            // not authorized, …) is a fatal rejection, NOT a healthy
+                            // connection. record_connack sets the fatal error state.
+                            state.record_connack(connack.code);
                             backoff.reset();
+                        }
+                        Ok(Event::Incoming(Packet::PubAck(_))) => {
+                            // Broker confirmed a QoS 1 delivery — the honest counter.
+                            state.record_puback();
                         }
                         Ok(_) => {}
                         Err(error) => {
@@ -183,6 +251,7 @@ impl RumqttPublisher {
         }
 
         stats.reconnects = self.reconnect_count();
+        stats.acked = self.acked_count();
         if stats.last_error.is_none() {
             stats.last_error = self.last_connection_error();
         }
@@ -202,12 +271,29 @@ impl RumqttPublisher {
         self.state.reconnects.load(Ordering::Relaxed)
     }
 
+    /// Running total of broker-confirmed QoS 1 deliveries (PubAcks). The honest
+    /// "delivered" counter — distinct from local enqueue attempts.
+    pub fn acked_count(&self) -> usize {
+        self.state.acked.load(Ordering::Relaxed)
+    }
+
     pub fn last_connection_error(&self) -> Option<String> {
         self.state
             .last_error
             .lock()
             .ok()
             .and_then(|value| value.clone())
+    }
+
+    /// A human message when the broker has *rejected* the connection (bad auth,
+    /// not authorized, …) — a fatal, non-self-healing error worth surfacing to the
+    /// operator. `None` while the connection is healthy or only transiently down.
+    pub fn connection_fatal_error(&self) -> Option<String> {
+        if self.state.fatal.load(Ordering::Relaxed) {
+            self.last_connection_error()
+        } else {
+            None
+        }
     }
 }
 
@@ -265,7 +351,12 @@ pub async fn publish_health<P: MqttPublisher + Send>(
 ) -> Result<()> {
     let payload = json!({
         "status": snapshot.status(),
+        // Local enqueue attempts this interval — NOT proof of delivery.
         "published": snapshot.published,
+        "queued": snapshot.published,
+        // Broker-confirmed deliveries (running total of QoS 1 PubAcks).
+        "acked": snapshot.acked,
+        "delivered": snapshot.acked,
         "failed_reads": snapshot.failed_reads,
         "failed_publishes": snapshot.failed_publishes,
         "stale_points": snapshot.stale_points,
@@ -433,6 +524,7 @@ mod tests {
             &config,
             HealthSnapshot {
                 published: 1,
+                acked: 7,
                 failed_reads: 2,
                 failed_publishes: 3,
                 stale_points: 4,
@@ -446,6 +538,10 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&publisher.calls[0].1).unwrap();
         assert_eq!(payload["status"], "degraded");
         assert_eq!(payload["published"], 1);
+        assert_eq!(payload["queued"], 1);
+        // Broker-confirmed deliveries are surfaced distinctly from local attempts.
+        assert_eq!(payload["acked"], 7);
+        assert_eq!(payload["delivered"], 7);
         assert_eq!(payload["stale_points"], 4);
         assert_eq!(payload["reconnects"], 5);
     }
@@ -477,11 +573,60 @@ mod tests {
             Some("network closed")
         );
 
-        state.record_connack();
+        state.record_connack(ConnectReturnCode::Success);
 
         assert!(state.connected.load(Ordering::Relaxed));
         assert_eq!(state.reconnects.load(Ordering::Relaxed), 1);
         assert_eq!(*state.last_error.lock().unwrap(), None);
+        assert!(state.connection_fatal_error_for_test().is_none());
+    }
+
+    #[test]
+    fn connack_failure_code_sets_fatal_error_and_does_not_connect() {
+        let state = ConnectionState::default();
+
+        // A bad-auth CONNACK must NOT mark the link up, and must surface a fatal,
+        // human-readable error rather than being counted as a reconnect.
+        state.record_connack(ConnectReturnCode::BadUserNamePassword);
+
+        assert!(!state.connected.load(Ordering::Relaxed));
+        assert_eq!(state.reconnects.load(Ordering::Relaxed), 0);
+        assert!(state.fatal.load(Ordering::Relaxed));
+        let message = state.last_error.lock().unwrap().clone().unwrap();
+        assert!(message.contains("bad username or password"), "{message}");
+        assert_eq!(
+            state.connection_fatal_error_for_test().as_deref(),
+            Some(&message[..])
+        );
+
+        // A later successful CONNACK clears the fatal state.
+        state.record_connack(ConnectReturnCode::Success);
+        assert!(state.connected.load(Ordering::Relaxed));
+        assert!(!state.fatal.load(Ordering::Relaxed));
+        assert!(state.connection_fatal_error_for_test().is_none());
+    }
+
+    #[test]
+    fn connack_not_authorized_is_fatal() {
+        let state = ConnectionState::default();
+        state.record_connack(ConnectReturnCode::NotAuthorized);
+        assert!(state.fatal.load(Ordering::Relaxed));
+        assert!(state
+            .last_error
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap()
+            .contains("not authorized"));
+    }
+
+    #[test]
+    fn puback_increments_acked_counter() {
+        let state = ConnectionState::default();
+        assert_eq!(state.acked.load(Ordering::Relaxed), 0);
+        state.record_puback();
+        state.record_puback();
+        assert_eq!(state.acked.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]
