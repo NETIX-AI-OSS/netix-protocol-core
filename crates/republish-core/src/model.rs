@@ -16,7 +16,10 @@ pub struct PointConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Human-friendly device/endpoint label (also used in the default topic).
-    #[serde(default)]
+    /// Display label only — NOT part of a point's identity (see [`PointIdentity`]),
+    /// so renaming it never orphans a point's poll/status history. May be spelled
+    /// `device_label` in config.
+    #[serde(default, alias = "device_label")]
     pub device_key: String,
     /// Protocol-native address (e.g. `{object_type, object_instance, property}`,
     /// `{table, address, datatype}`, or `{node_id}`).
@@ -49,6 +52,12 @@ impl PointConfig {
             .map(|(k, v)| format!("{k}={}", json_scalar(v)))
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    /// Human-friendly device label. Alias for [`PointConfig::device_key`]; config
+    /// may spell the field `device_label`, and this accessor returns the same value.
+    pub fn device_label(&self) -> &str {
+        &self.device_key
     }
 
     pub fn display_name(&self) -> String {
@@ -176,10 +185,12 @@ impl PublishStats {
     }
 }
 
-/// Identity used to dedupe points across imports: device key + addressing.
+/// Identity used to dedupe points and to key poll/status history: the point's
+/// protocol addressing (`device_instance`, `object_type`, `object_instance`,
+/// `property`, …) only. Deliberately independent of `device_key` so renaming a
+/// device's human-friendly label does not orphan a point's poll/status history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointIdentity {
-    pub device_key: String,
     pub addressing: Vec<(String, String)>,
 }
 
@@ -191,16 +202,12 @@ impl PointIdentity {
             .map(|(k, v)| (k.clone(), json_scalar(v)))
             .collect();
         addressing.sort();
-        Self {
-            device_key: point.device_key.trim().to_ascii_lowercase(),
-            addressing,
-        }
+        Self { addressing }
     }
 }
 
 impl Hash for PointIdentity {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.device_key.hash(state);
         self.addressing.hash(state);
     }
 }
@@ -287,6 +294,7 @@ pub fn default_poll_interval_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     fn point(device: &str, addr: &[(&str, serde_json::Value)]) -> PointConfig {
         let mut addressing = Addressing::new();
@@ -323,6 +331,58 @@ mod tests {
             &[("a", serde_json::json!(1)), ("b", serde_json::json!(2))],
         );
         assert_eq!(PointIdentity::from_point(&a), PointIdentity::from_point(&b));
+    }
+
+    #[test]
+    fn point_identity_is_stable_across_device_key_rename() {
+        // Same addressing, different (renamed) device_key -> identity unchanged,
+        // so poll/status history keyed on PointIdentity is not orphaned.
+        let addr = &[
+            ("device_instance", serde_json::json!(12)),
+            ("object_type", serde_json::json!("analogInput")),
+            ("object_instance", serde_json::json!(3)),
+            ("property", serde_json::json!("presentValue")),
+        ];
+        let before = point("ahu-12", addr);
+        let after = point("ahu-12-renamed", addr);
+
+        let id_before = PointIdentity::from_point(&before);
+        let id_after = PointIdentity::from_point(&after);
+        assert_eq!(id_before, id_after);
+
+        // Hash equality too (identity is used as a HashMap key).
+        let mut set = HashSet::new();
+        set.insert(id_before);
+        assert!(set.contains(&id_after));
+    }
+
+    #[test]
+    fn point_identity_differs_across_distinct_addressing() {
+        // Identical device_key but distinct addressing -> distinct identities.
+        let a = point(
+            "ahu-12",
+            &[
+                ("object_type", serde_json::json!("analogInput")),
+                ("object_instance", serde_json::json!(3)),
+            ],
+        );
+        let b = point(
+            "ahu-12",
+            &[
+                ("object_type", serde_json::json!("analogInput")),
+                ("object_instance", serde_json::json!(4)),
+            ],
+        );
+        assert_ne!(PointIdentity::from_point(&a), PointIdentity::from_point(&b));
+    }
+
+    #[test]
+    fn device_label_alias_deserializes_and_accessor_matches() {
+        // Config may spell the field `device_label`.
+        let cfg: PointConfig =
+            serde_json::from_str(r#"{"device_label":"boiler-3"}"#).expect("device_label alias");
+        assert_eq!(cfg.device_key, "boiler-3");
+        assert_eq!(cfg.device_label(), "boiler-3");
     }
 
     #[test]
