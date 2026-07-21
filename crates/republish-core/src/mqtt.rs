@@ -717,4 +717,243 @@ mod tests {
         };
         assert!(build_transport(&cfg).is_ok());
     }
+
+    #[test]
+    fn health_snapshot_status_is_ok_without_failures() {
+        let snapshot = HealthSnapshot {
+            published: 9,
+            acked: 9,
+            failed_reads: 0,
+            failed_publishes: 0,
+            stale_points: 0,
+            reconnects: 2,
+            last_error: None,
+        };
+        // Reconnects alone do not degrade status — only read/publish/stale failures do.
+        assert_eq!(snapshot.status(), "ok");
+    }
+
+    #[test]
+    fn health_snapshot_status_degrades_on_stale_points_only() {
+        let snapshot = HealthSnapshot {
+            published: 1,
+            acked: 1,
+            failed_reads: 0,
+            failed_publishes: 0,
+            stale_points: 1,
+            reconnects: 0,
+            last_error: None,
+        };
+        assert_eq!(snapshot.status(), "degraded");
+    }
+
+    #[test]
+    fn health_snapshot_is_serializable_snapshot_value() {
+        // The snapshot is a plain value: clone/equality hold so the poll loop can
+        // diff successive snapshots.
+        let snapshot = HealthSnapshot {
+            published: 3,
+            acked: 2,
+            failed_reads: 1,
+            failed_publishes: 0,
+            stale_points: 0,
+            reconnects: 4,
+            last_error: Some("boom".to_string()),
+        };
+        assert_eq!(snapshot.clone(), snapshot);
+    }
+
+    #[test]
+    fn connack_error_message_describes_every_return_code() {
+        // Every non-Success arm must produce an operator-actionable reason, and the
+        // Success arm is still well-formed even though record_connack never routes it here.
+        for (code, needle) in [
+            (ConnectReturnCode::Success, "connection accepted"),
+            (
+                ConnectReturnCode::RefusedProtocolVersion,
+                "unacceptable protocol version",
+            ),
+            (ConnectReturnCode::BadClientId, "client identifier rejected"),
+            (ConnectReturnCode::ServiceUnavailable, "service unavailable"),
+            (
+                ConnectReturnCode::BadUserNamePassword,
+                "bad username or password",
+            ),
+            (ConnectReturnCode::NotAuthorized, "not authorized"),
+        ] {
+            let message = connack_error_message(code);
+            assert!(message.contains(needle), "{code:?}: {message}");
+            assert!(message.contains("MQTT broker refused the connection"));
+        }
+    }
+
+    #[test]
+    fn connack_bad_client_id_and_service_unavailable_are_fatal() {
+        for code in [
+            ConnectReturnCode::RefusedProtocolVersion,
+            ConnectReturnCode::BadClientId,
+            ConnectReturnCode::ServiceUnavailable,
+        ] {
+            let state = ConnectionState::default();
+            state.record_connack(code);
+            assert!(state.fatal.load(Ordering::Relaxed), "{code:?}");
+            assert!(!state.connected.load(Ordering::Relaxed), "{code:?}");
+            assert_eq!(state.reconnects.load(Ordering::Relaxed), 0, "{code:?}");
+            assert!(state.connection_fatal_error_for_test().is_some(), "{code:?}");
+        }
+    }
+
+    #[test]
+    fn build_transport_uses_native_roots_with_client_cert_and_no_ca() {
+        // client cert present but no explicit CA → the platform's native root store
+        // is loaded and combined with the client certificate.
+        let dir = tempfile::tempdir().unwrap();
+        let (_, cert_path, key_path) = write_test_tls_material(dir.path());
+        let cfg = MqttConfig {
+            use_tls: true,
+            ca_cert_path: None,
+            client_cert_path: Some(cert_path.to_string_lossy().into_owned()),
+            client_key_path: Some(key_path.to_string_lossy().into_owned()),
+            ..MqttConfig::default()
+        };
+        assert!(matches!(build_transport(&cfg).unwrap(), Transport::Tls(_)));
+    }
+
+    #[test]
+    fn build_transport_rejects_ca_file_without_certificates() {
+        let dir = tempfile::tempdir().unwrap();
+        let bogus_ca = dir.path().join("empty-ca.pem");
+        std::fs::write(&bogus_ca, b"not a certificate at all\n").unwrap();
+        let cfg = MqttConfig {
+            use_tls: true,
+            ca_cert_path: Some(bogus_ca.to_string_lossy().into_owned()),
+            ..MqttConfig::default()
+        };
+        let error = build_transport(&cfg).err().expect("expected a CA parse error");
+        assert!(
+            format!("{error:#}").contains("no usable CA certificates"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn rumqtt_publisher_new_requires_a_tokio_runtime() {
+        // Called with no current runtime it must fail fast rather than panic later.
+        let cfg = MqttConfig {
+            use_tls: false,
+            ..MqttConfig::default()
+        };
+        let error = RumqttPublisher::new(&cfg)
+            .err()
+            .expect("expected a missing-runtime error");
+        assert!(
+            format!("{error}").contains("within a tokio runtime"),
+            "{error}"
+        );
+    }
+
+    fn test_sample(topic: &str) -> PointSample {
+        PointSample {
+            point: PointConfig::default(),
+            value: TelemetryValue::Number(1.0),
+            topic: topic.to_string(),
+            timestamp_ms: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn rumqtt_publisher_enqueues_without_a_broker_and_reports_counters() {
+        // A never-reachable broker: the event loop stays in connect/backoff, so
+        // try_publish only enqueues into the outbound channel — no delivery.
+        let cfg = MqttConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            use_tls: false,
+            retain: true,
+            // Non-empty credentials exercise the set_credentials path in new().
+            username: Some("edge".to_string()),
+            password: Some("secret".to_string()),
+            ..MqttConfig::default()
+        };
+        let mut publisher = RumqttPublisher::new(&cfg).unwrap();
+
+        assert_eq!(publisher.reconnect_count(), 0);
+        assert_eq!(publisher.acked_count(), 0);
+        assert!(publisher.connection_fatal_error().is_none());
+
+        let samples = [test_sample("Netix/A"), test_sample("Netix/B")];
+        let stats = publisher.enqueue_samples(&cfg, &samples);
+        assert_eq!(stats.queued, 2);
+        assert_eq!(stats.published, 2);
+        assert_eq!(stats.failed, 0);
+        assert_eq!(stats.acked, 0);
+        assert_eq!(stats.reconnects, 0);
+
+        // Direct enqueue helpers succeed too (channel has room).
+        publisher
+            .try_enqueue_sample("Netix/C", b"1".to_vec(), false)
+            .unwrap();
+        MqttPublisher::publish(&mut publisher, "Netix/D", b"1".to_vec(), true)
+            .await
+            .unwrap();
+        // Drop aborts the background task.
+    }
+
+    #[tokio::test]
+    async fn rumqtt_publisher_records_transient_error_when_broker_refuses() {
+        // Connecting to a closed local port yields a transport error the event loop
+        // records — a transient (non-fatal) failure, so no fatal error is surfaced.
+        let cfg = MqttConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            use_tls: false,
+            ..MqttConfig::default()
+        };
+        let publisher = RumqttPublisher::new(&cfg).unwrap();
+
+        let mut recorded = None;
+        for _ in 0..100 {
+            if let Some(error) = publisher.last_connection_error() {
+                recorded = Some(error);
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        let recorded = recorded.expect("event loop should have recorded a connection error");
+        assert!(!recorded.is_empty());
+        // A transport refusal is not a fatal auth/config rejection.
+        assert!(publisher.connection_fatal_error().is_none());
+    }
+
+    #[tokio::test]
+    async fn enqueue_samples_counts_failures_when_outbound_channel_is_full() {
+        // With no broker the channel never drains; enqueuing past its capacity forces
+        // try_publish to fail fast so samples are dropped and counted rather than blocking.
+        let cfg = MqttConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            use_tls: false,
+            ..MqttConfig::default()
+        };
+        let mut publisher = RumqttPublisher::new(&cfg).unwrap();
+
+        let overflow = OUTBOUND_CHANNEL_CAPACITY + 500;
+        let samples: Vec<PointSample> =
+            (0..overflow).map(|_| test_sample("Netix/Flood")).collect();
+        let stats = publisher.enqueue_samples(&cfg, &samples);
+
+        assert_eq!(stats.queued, overflow);
+        assert_eq!(stats.published + stats.failed, overflow);
+        assert!(stats.failed > 0, "channel-full drops should be counted");
+        assert!(stats.published <= OUTBOUND_CHANNEL_CAPACITY);
+        assert!(
+            stats
+                .last_error
+                .as_deref()
+                .unwrap()
+                .contains("failed to enqueue MQTT publish"),
+            "{:?}",
+            stats.last_error
+        );
+    }
 }
