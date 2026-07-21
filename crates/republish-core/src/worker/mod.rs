@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Sender;
-use proto_api::Addressing;
+use proto_api::{Addressing, BrowseKind, Capabilities, DiscoveryKind};
 
 pub use events::{RepublisherLifecycle, WorkerChannel, WorkerEvent, WorkerReceiver, WorkerSender};
 
@@ -21,7 +21,7 @@ use crate::model::{
     PointConfig, PointFailure, PointIdentity, PointSample, PointStatus, PublishStats,
 };
 use crate::mqtt::{publish_health, HealthSnapshot, RumqttPublisher};
-use crate::protocol::RepublishFactory;
+use crate::protocol::{RepublishFactory, RepublishProtocol};
 
 use backoff::{update_device_backoffs, DeviceBackoff};
 use events::log;
@@ -575,13 +575,84 @@ pub fn spawn_poll_once(
     });
 }
 
+/// Whether an adapter can build a point set from discovery: it both discovers
+/// devices *and* browses their points. Manual-only discovery or a no-op browse
+/// cannot produce points, so `discover_on_start` has nothing to work with.
+fn supports_discovery(caps: &Capabilities) -> bool {
+    caps.discovery != DiscoveryKind::ManualOnly && caps.browse != BrowseKind::None
+}
+
+/// The lifecycle/log message when a start has no points to publish. Split out so
+/// the exact wording is asserted by a unit test and stays identical in both the
+/// `Warning` log and the `Failed` lifecycle event.
+fn no_points_message(discover_on_start: bool, discovery_supported: bool) -> String {
+    if discover_on_start {
+        if discovery_supported {
+            "discover_on_start=true but discovery found no pollable points; nothing to publish"
+                .to_string()
+        } else {
+            "discover_on_start=true but the selected protocol does not support discovery; \
+             nothing to publish"
+                .to_string()
+        }
+    } else {
+        "no enabled points and discover_on_start=false; nothing to publish".to_string()
+    }
+}
+
+/// Discover devices, browse each, and build an in-memory, identity-faithful point
+/// set — the runtime half of "run-from-discovery" (RCA §4 Fix B). Reuses the
+/// shared browse→import path ([`point_from_discovered`] + [`merge_imported_points`]
+/// for identity-keyed dedupe), so the points it builds carry the same
+/// `device_key`/`tag_path` the GUI **Discover** button and the emitted config
+/// produce. Returns the built points plus any discovery/browse warnings for the
+/// caller to surface. Lets a connection-only config poll a self-describing BACnet
+/// source with no hand-authored `config.toml` points.
+pub async fn discover_points(
+    proto: &dyn RepublishProtocol,
+    conn: &Addressing,
+) -> anyhow::Result<(Vec<PointConfig>, Vec<String>)> {
+    let mut warnings = Vec::new();
+    let discovered = proto.discover(conn).await?;
+    warnings.extend(discovered.warnings);
+
+    let mut imported: Vec<PointConfig> = Vec::new();
+    for device in &discovered.devices {
+        match proto.browse(conn, device).await {
+            Ok(outcome) => {
+                warnings.extend(outcome.warnings);
+                for point in outcome.points {
+                    imported.push(point_from_discovered(
+                        &point,
+                        crate::defaults::POLL_INTERVAL_SECS,
+                    ));
+                }
+            }
+            Err(error) => {
+                warnings.push(format!("{}: browse failed: {error:#}", device.key));
+            }
+        }
+    }
+
+    // Identity-keyed dedupe via the shared merge (the same path the GUI bulk scan
+    // uses), starting from an empty base so we get exactly the discovered set.
+    let merged = merge_imported_points(&[], &imported);
+    Ok((merged.points, warnings))
+}
+
 /// Run the continuous poll→publish loop until `stop` is set.
+///
+/// With no enabled points the worker no longer spins forever publishing nothing
+/// (RCA #2/#4): if `discover_on_start` is set and the adapter supports discovery
+/// it discovers→browses→builds a point set in memory and polls that; otherwise it
+/// emits a loud `Warning` + `Failed` lifecycle event and stops.
 pub fn spawn_republisher(
     sender: Sender<WorkerEvent>,
     factory: RepublishFactory,
     conn: Addressing,
     mqtt: MqttConfig,
     points: Vec<PointConfig>,
+    discover_on_start: bool,
     stop: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
@@ -590,6 +661,57 @@ pub fn spawn_republisher(
             let _ = sender.send(WorkerEvent::Lifecycle(RepublisherLifecycle::Starting));
             let proto = factory();
             let backoff_max = device_backoff_max(&conn);
+
+            // Resolve the working point set BEFORE opening the broker link. With no
+            // enabled points we either discover-then-poll (discover_on_start) or
+            // fail loud — never enter the loop with an empty due set and publish
+            // nothing silently (RCA #2/#4).
+            let mut points = points;
+            if !points.iter().any(|p| p.enabled) {
+                let discovery_supported = supports_discovery(proto.capabilities());
+                if discover_on_start && discovery_supported {
+                    log(
+                        &sender,
+                        LogLevel::Info,
+                        "No enabled points; discover_on_start=true — discovering devices to poll"
+                            .to_string(),
+                    );
+                    match discover_points(proto.as_ref(), &conn).await {
+                        Ok((discovered, warnings)) => {
+                            for warning in warnings {
+                                log(&sender, LogLevel::Warning, warning);
+                            }
+                            log(
+                                &sender,
+                                LogLevel::Info,
+                                format!(
+                                    "discover_on_start built {} point(s) from discovery",
+                                    discovered.len()
+                                ),
+                            );
+                            points = discovered;
+                        }
+                        Err(error) => {
+                            let message = format!("discover_on_start discovery failed: {error:#}");
+                            log(&sender, LogLevel::Error, message.clone());
+                            let _ = sender.send(WorkerEvent::Lifecycle(
+                                RepublisherLifecycle::Failed(message),
+                            ));
+                            return;
+                        }
+                    }
+                }
+                // Still nothing to publish: warn loud and fail the lifecycle rather
+                // than looping forever over an empty point set.
+                if !points.iter().any(|p| p.enabled) {
+                    let message = no_points_message(discover_on_start, discovery_supported);
+                    log(&sender, LogLevel::Warning, message.clone());
+                    let _ = sender
+                        .send(WorkerEvent::Lifecycle(RepublisherLifecycle::Failed(message)));
+                    return;
+                }
+            }
+
             let mut publisher = match RumqttPublisher::new(&mqtt) {
                 Ok(publisher) => publisher,
                 Err(error) => {
@@ -844,8 +966,71 @@ pub fn spawn_republisher(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{PointConfig, RefreshOutcome};
+    use crate::model::{
+        BrowseOutcome, DiscoverOutcome, DiscoveredDevice, PointConfig, PollOutcome, RefreshOutcome,
+    };
     use crossbeam_channel::unbounded;
+    use std::sync::OnceLock;
+
+    /// A minimal manual-only adapter: no discovery, no browse. Used to exercise
+    /// the zero-points startup paths without any network or MQTT dependency.
+    struct ManualProto;
+
+    fn manual_caps() -> &'static Capabilities {
+        static CAPS: OnceLock<Capabilities> = OnceLock::new();
+        CAPS.get_or_init(|| Capabilities {
+            id: "manual",
+            display_name: "Manual",
+            discovery: DiscoveryKind::ManualOnly,
+            browse: BrowseKind::None,
+            connection_fields: Vec::new(),
+            addressing_fields: Vec::new(),
+            default_port: 0,
+        })
+    }
+
+    #[async_trait::async_trait]
+    impl RepublishProtocol for ManualProto {
+        fn capabilities(&self) -> &Capabilities {
+            manual_caps()
+        }
+        async fn discover(&self, _conn: &Addressing) -> anyhow::Result<DiscoverOutcome> {
+            Ok(DiscoverOutcome::default())
+        }
+        async fn browse(
+            &self,
+            _conn: &Addressing,
+            _device: &DiscoveredDevice,
+        ) -> anyhow::Result<BrowseOutcome> {
+            Ok(BrowseOutcome::default())
+        }
+        async fn poll(
+            &self,
+            _conn: &Addressing,
+            _points: &[PointConfig],
+        ) -> anyhow::Result<PollOutcome> {
+            Ok(PollOutcome::default())
+        }
+    }
+
+    fn manual_factory() -> Box<dyn RepublishProtocol> {
+        Box::new(ManualProto)
+    }
+
+    /// Drain worker events until a `Failed` lifecycle arrives (or timeout).
+    fn wait_for_failed(rx: &crossbeam_channel::Receiver<WorkerEvent>) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(WorkerEvent::Lifecycle(RepublisherLifecycle::Failed(message))) => {
+                    return Some(message)
+                }
+                Ok(_) => continue,
+                Err(_) => continue,
+            }
+        }
+        None
+    }
 
     fn bacnet_point(device: u32, enabled: bool) -> PointConfig {
         let mut addressing = Addressing::new();
@@ -965,5 +1150,95 @@ mod tests {
             &last_poll,
         );
         assert_eq!(due.len(), 1);
+    }
+
+    #[test]
+    fn supports_discovery_requires_discovery_and_browse() {
+        // A manual-only, no-browse adapter cannot build points from discovery.
+        assert!(!supports_discovery(manual_caps()));
+
+        let broadcast = Capabilities {
+            discovery: DiscoveryKind::Broadcast,
+            browse: BrowseKind::ObjectList,
+            ..manual_caps().clone()
+        };
+        assert!(supports_discovery(&broadcast));
+
+        // Discovery without browse still can't produce points.
+        let no_browse = Capabilities {
+            discovery: DiscoveryKind::Broadcast,
+            browse: BrowseKind::None,
+            ..manual_caps().clone()
+        };
+        assert!(!supports_discovery(&no_browse));
+    }
+
+    #[test]
+    fn no_points_message_wording_is_stable() {
+        // The false/no-discover message matches the RCA-specified wording exactly.
+        let off = no_points_message(false, true);
+        assert!(off.contains("no enabled points and discover_on_start=false"), "{off}");
+
+        assert!(no_points_message(true, false).contains("does not support discovery"));
+        assert!(no_points_message(true, true).contains("found no pollable points"));
+
+        for message in [
+            no_points_message(false, false),
+            no_points_message(true, false),
+            no_points_message(true, true),
+        ] {
+            assert!(message.contains("nothing to publish"), "{message}");
+        }
+    }
+
+    #[test]
+    fn zero_points_without_discover_fails_loud() {
+        // No enabled points + discover_on_start=false must emit a Failed lifecycle
+        // event (not spin forever). The empty-points check short-circuits before
+        // the MQTT publisher is created, so no broker is needed here.
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        spawn_republisher(
+            tx,
+            manual_factory,
+            Addressing::new(),
+            MqttConfig::default(),
+            Vec::new(),
+            false,
+            Arc::clone(&stop),
+        );
+
+        let message = wait_for_failed(&rx).expect("expected Failed lifecycle for zero points");
+        stop.store(true, Ordering::Relaxed);
+        assert!(
+            message.contains("no enabled points and discover_on_start=false"),
+            "got: {message}"
+        );
+        assert!(message.contains("nothing to publish"), "got: {message}");
+    }
+
+    #[test]
+    fn zero_points_with_discover_but_no_devices_fails_loud() {
+        // discover_on_start=true against a manual-only adapter (no discovery) also
+        // fails loud rather than spinning — surfacing that the protocol can't
+        // self-describe.
+        let (tx, rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        spawn_republisher(
+            tx,
+            manual_factory,
+            Addressing::new(),
+            MqttConfig::default(),
+            Vec::new(),
+            true,
+            Arc::clone(&stop),
+        );
+
+        let message = wait_for_failed(&rx).expect("expected Failed lifecycle");
+        stop.store(true, Ordering::Relaxed);
+        assert!(
+            message.contains("does not support discovery"),
+            "got: {message}"
+        );
     }
 }

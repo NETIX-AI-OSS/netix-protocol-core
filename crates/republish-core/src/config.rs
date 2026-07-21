@@ -29,6 +29,14 @@ pub struct AppConfig {
     pub mqtt: MqttConfig,
     #[serde(default)]
     pub points: Vec<PointConfig>,
+    /// Run-from-discovery: when `true` and no points are enabled, the republisher
+    /// discovers devices, browses their points, and polls the discovered set
+    /// (built in memory), so `config.toml` collapses to connection-only for a
+    /// self-describing protocol like BACnet. When `false` (default), a start with
+    /// no enabled points fails loud instead of spinning forever publishing
+    /// nothing — see [`crate::worker::spawn_republisher`].
+    #[serde(default)]
+    pub discover_on_start: bool,
     #[serde(default)]
     pub ui: UiPreferences,
 }
@@ -161,6 +169,7 @@ impl Default for AppConfig {
             connections: BTreeMap::new(),
             mqtt: MqttConfig::default(),
             points: Vec::new(),
+            discover_on_start: false,
             ui: UiPreferences::default(),
         }
     }
@@ -542,6 +551,7 @@ mod tests {
         let path = temp.path().join("config.toml");
         let mut config = AppConfig {
             protocol: "modbus".into(),
+            discover_on_start: true,
             ..Default::default()
         };
         config
@@ -561,6 +571,10 @@ mod tests {
         let loaded = load_from_path(&path).unwrap();
 
         assert_eq!(loaded.protocol, "modbus");
+        // discover_on_start is serialized and survives the round-trip; a config
+        // file predating the field still parses (serde default = false).
+        assert!(loaded.discover_on_start);
+        assert!(!AppConfig::default().discover_on_start);
         assert_eq!(loaded.points.len(), 1);
         assert_eq!(loaded.points[0].tag_path, "PLC1/Temp");
         assert_eq!(

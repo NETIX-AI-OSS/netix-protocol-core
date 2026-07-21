@@ -586,6 +586,7 @@ impl RepublisherApp {
             self.config.connection(),
             self.config.mqtt.clone(),
             self.config.points.clone(),
+            self.config.discover_on_start,
             stop,
         );
         self.save_status(LogLevel::Info, "Republisher starting…");
