@@ -69,6 +69,7 @@ pub fn update_device_backoffs(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use proto_api::Addressing;

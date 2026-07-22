@@ -69,6 +69,7 @@ pub(crate) fn log(sender: &Sender<WorkerEvent>, level: LogLevel, message: impl I
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

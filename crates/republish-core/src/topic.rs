@@ -114,6 +114,7 @@ pub fn sanitize_segment(value: &str) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use proto_api::Addressing;

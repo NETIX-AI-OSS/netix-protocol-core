@@ -87,6 +87,7 @@ impl RepublishRegistry {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use proto_api::{BrowseKind, DiscoveryKind};

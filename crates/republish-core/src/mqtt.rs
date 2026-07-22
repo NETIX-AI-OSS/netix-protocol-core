@@ -223,6 +223,10 @@ pub struct RumqttPublisher {
 
 impl RumqttPublisher {
     /// Must be called from within a tokio runtime: the event loop runs in a spawned task.
+    // coverage(off): builds MqttOptions and spawns the live rumqttc event-loop task;
+    // the per-poll dispatch logic is unit-tested separately via `apply_poll`, and the
+    // spawned task body only makes progress against a live broker.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(config: &MqttConfig) -> Result<Self> {
         let mut options = MqttOptions::new(&config.client_id, &config.host, config.port);
         options.set_keep_alive(Duration::from_secs(config.keep_alive_secs.max(5)));
@@ -481,6 +485,9 @@ fn load_root_store_from_file(path: &Path) -> Result<rumqttc::tokio_rustls::rustl
     Ok(roots)
 }
 
+// coverage(off): loads the OS trust store; the empty-store error arm only fires on a
+// host with zero system CA certificates, which cannot be forced in a normal test.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn load_native_root_store() -> Result<rumqttc::tokio_rustls::rustls::RootCertStore> {
     let mut roots = rumqttc::tokio_rustls::rustls::RootCertStore::empty();
     let result = rustls_native_certs::load_native_certs();
@@ -519,6 +526,7 @@ fn load_private_key(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::model::{PointConfig, TelemetryValue};
@@ -1138,6 +1146,37 @@ mod tests {
                 .contains("failed to enqueue MQTT publish"),
             "{:?}",
             stats.last_error
+        );
+    }
+
+    #[test]
+    fn trait_default_connection_fatal_error_is_none() {
+        // A publisher that keeps no broker link (FakePublisher does NOT override
+        // connection_fatal_error) must report no fatal error through the trait's
+        // default method. Exercises the trait default body directly.
+        let publisher = FakePublisher::default();
+        assert!(MqttPublisher::connection_fatal_error(&publisher).is_none());
+    }
+
+    #[tokio::test]
+    async fn trait_connection_fatal_error_surfaces_via_ufcs() {
+        // The MqttPublisher trait method is distinct from the inherent method of the
+        // same name (inherent wins at `publisher.connection_fatal_error()`); call the
+        // trait method through UFCS so its fatal arm is exercised. Force the documented
+        // precondition — a broker rejection sets fatal + last_error via record_fatal.
+        let cfg = MqttConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            use_tls: false,
+            ..MqttConfig::default()
+        };
+        let publisher = RumqttPublisher::new(&cfg).unwrap();
+        assert!(MqttPublisher::connection_fatal_error(&publisher).is_none());
+
+        publisher.state.record_fatal("not authorized");
+        assert_eq!(
+            MqttPublisher::connection_fatal_error(&publisher).as_deref(),
+            Some("not authorized")
         );
     }
 }

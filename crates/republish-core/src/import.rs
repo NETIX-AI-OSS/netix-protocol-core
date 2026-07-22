@@ -70,6 +70,7 @@ pub fn point_from_discovered(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use proto_api::Addressing;

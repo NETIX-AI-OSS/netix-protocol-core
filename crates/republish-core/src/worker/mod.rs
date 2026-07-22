@@ -1007,6 +1007,7 @@ async fn run_republisher<P: MqttPublisher + Send>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::config::PayloadFormat;

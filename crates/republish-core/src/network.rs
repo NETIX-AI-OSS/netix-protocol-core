@@ -66,6 +66,7 @@ pub fn interface_choices(interfaces: &[NetworkInterface]) -> Vec<Ipv4Addr> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
