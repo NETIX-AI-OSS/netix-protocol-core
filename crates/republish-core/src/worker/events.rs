@@ -67,3 +67,41 @@ impl WorkerChannel {
 pub(crate) fn log(sender: &Sender<WorkerEvent>, level: LogLevel, message: impl Into<String>) {
     let _ = sender.send(WorkerEvent::Log(level, message.into()));
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_new_round_trips_events() {
+        let channel = WorkerChannel::new();
+        channel
+            .sender
+            .send(WorkerEvent::Finished("done".into()))
+            .unwrap();
+        let event = channel.receiver.try_recv().unwrap();
+        assert!(
+            matches!(&event, WorkerEvent::Finished(message) if message == "done"),
+            "got {event:?}"
+        );
+    }
+
+    #[test]
+    fn channel_default_is_wired_and_empty() {
+        let channel = WorkerChannel::default();
+        // Nothing sent yet -> receiver is empty.
+        assert!(channel.receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn log_helper_sends_log_event() {
+        let channel = WorkerChannel::new();
+        log(&channel.sender, LogLevel::Warning, "careful");
+        let event = channel.receiver.try_recv().unwrap();
+        assert!(
+            matches!(&event, WorkerEvent::Log(LogLevel::Warning, message) if message == "careful"),
+            "got {event:?}"
+        );
+    }
+}

@@ -12,32 +12,46 @@ pub fn run_async<F>(sender: Sender<WorkerEvent>, future: F) -> bool
 where
     F: std::future::Future<Output = ()>,
 {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
+    // build_worker_runtime is coverage(off): its only failure arm is an unforceable OS
+    // resource fault. is_some_and folds that build-failure (None -> false) into std,
+    // keeping the tested panic-handling below measured without leaving an OS-fault-only
+    // branch in this function.
+    build_worker_runtime(&sender).is_some_and(|runtime| {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.block_on(future))) {
+            Ok(()) => true,
+            Err(panic) => {
+                log(
+                    &sender,
+                    LogLevel::Error,
+                    format!("Worker thread crashed: {}", panic_message(panic.as_ref())),
+                );
+                let _ = sender.send(WorkerEvent::Finished(
+                    "Worker stopped unexpectedly".to_string(),
+                ));
+                false
+            }
+        }
+    })
+}
+
+/// Build the multi-threaded worker runtime, logging and returning None on failure.
+// coverage(off): tokio's Builder::build() only errors on an OS thread/resource
+// exhaustion fault, which cannot be forced in a normal test. The panic-handling body
+// of run_async stays measured.
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn build_worker_runtime(sender: &Sender<WorkerEvent>) -> Option<tokio::runtime::Runtime> {
+    match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
     {
-        Ok(runtime) => runtime,
+        Ok(runtime) => Some(runtime),
         Err(error) => {
             log(
-                &sender,
+                sender,
                 LogLevel::Error,
                 format!("Failed to start async runtime: {error:#}"),
             );
-            return false;
-        }
-    };
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.block_on(future))) {
-        Ok(()) => true,
-        Err(panic) => {
-            log(
-                &sender,
-                LogLevel::Error,
-                format!("Worker thread crashed: {}", panic_message(panic.as_ref())),
-            );
-            let _ = sender.send(WorkerEvent::Finished(
-                "Worker stopped unexpectedly".to_string(),
-            ));
-            false
+            None
         }
     }
 }
@@ -53,6 +67,7 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crossbeam_channel::unbounded;
@@ -65,15 +80,57 @@ mod tests {
         });
         assert!(!completed);
         let event = receiver.try_recv().unwrap();
-        match event {
-            WorkerEvent::Log(LogLevel::Error, message) => {
-                assert!(message.contains("boom"));
-            }
-            other => panic!("expected error log, got {other:?}"),
-        }
-        match receiver.try_recv().unwrap() {
-            WorkerEvent::Finished(message) => assert!(message.contains("unexpectedly")),
-            other => panic!("expected Finished, got {other:?}"),
-        }
+        assert!(
+            matches!(&event, WorkerEvent::Log(LogLevel::Error, message) if message.contains("boom")),
+            "got {event:?}"
+        );
+        let finished = receiver.try_recv().unwrap();
+        assert!(
+            matches!(&finished, WorkerEvent::Finished(message) if message.contains("unexpectedly")),
+            "got {finished:?}"
+        );
+    }
+
+    #[test]
+    fn run_async_returns_true_and_stays_quiet_on_success() {
+        let (sender, receiver) = unbounded();
+        let completed = run_async(sender, async {});
+        assert!(completed);
+        // A clean run emits no events.
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn panic_message_extracts_str_payload() {
+        let payload: &str = "static message";
+        assert_eq!(panic_message(&payload), "static message");
+    }
+
+    #[test]
+    fn panic_message_extracts_string_payload() {
+        let payload: String = "owned message".to_string();
+        assert_eq!(panic_message(&payload), "owned message");
+    }
+
+    #[test]
+    fn panic_message_falls_back_for_unknown_payload() {
+        // A payload that is neither &str nor String yields the generic label.
+        assert_eq!(panic_message(&42_u64), "unknown panic");
+    }
+
+    #[test]
+    fn run_async_reports_non_str_panic_payload() {
+        // Panicking with a String payload exercises the String branch of
+        // panic_message end-to-end.
+        let (sender, receiver) = unbounded();
+        let completed = run_async(sender, async {
+            std::panic::panic_any(String::from("string boom"));
+        });
+        assert!(!completed);
+        let event = receiver.try_recv().unwrap();
+        assert!(
+            matches!(&event, WorkerEvent::Log(LogLevel::Error, message) if message.contains("string boom")),
+            "got {event:?}"
+        );
     }
 }

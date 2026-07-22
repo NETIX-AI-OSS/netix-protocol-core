@@ -10,6 +10,7 @@ ignore = [
     "RUSTSEC-2024-0436", # paste — unmaintained, ubiquitous proc-macro dep
     "RUSTSEC-2025-0134", # rustls-pemfile — unmaintained
     "RUSTSEC-2026-0192", # ttf-parser (via iced GUI) — unmaintained
+    "RUSTSEC-2026-0206", # rustybuzz (via iced GUI) — unmaintained
     # Transitive vulnerabilities pinned by upstream (not directly upgradable):
     "RUSTSEC-2026-0194", # quick-xml DoS (via async-opcua) — trusted-input path
     "RUSTSEC-2026-0195", # quick-xml DoS (via async-opcua) — trusted-input path

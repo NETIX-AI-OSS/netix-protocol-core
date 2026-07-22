@@ -70,6 +70,7 @@ pub fn point_from_discovered(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use proto_api::Addressing;
@@ -97,6 +98,53 @@ mod tests {
         assert_eq!(result.updated, 1);
         assert_eq!(result.points.len(), 2);
         assert_eq!(result.points[0].tag_path, "PLC1/SupplyTemp");
+    }
+
+    #[test]
+    fn merge_updates_device_key_when_relabelled() {
+        // Same identity (addressing), tag unchanged, but a new non-empty
+        // device_key -> the existing point is relabelled and counted as updated.
+        let existing = vec![point("PLC1", 1, "PLC1/Supply")];
+        let imported = vec![point("Chiller-A", 1, "PLC1/Supply")];
+        let result = merge_imported_points(&existing, &imported);
+        assert_eq!(result.added, 0);
+        assert_eq!(result.updated, 1);
+        assert_eq!(result.points[0].device_key, "Chiller-A");
+        assert_eq!(result.points[0].tag_path, "PLC1/Supply");
+    }
+
+    #[test]
+    fn merge_ignores_blank_incoming_fields() {
+        // Imported point with same identity but blank device_key and tag_path
+        // must not clobber the existing values, and counts as no change.
+        let existing = vec![point("PLC1", 1, "PLC1/Supply")];
+        let imported = vec![point("   ", 1, "  ")];
+        let result = merge_imported_points(&existing, &imported);
+        assert_eq!(result.added, 0);
+        assert_eq!(result.updated, 0);
+        assert_eq!(result.points[0].device_key, "PLC1");
+        assert_eq!(result.points[0].tag_path, "PLC1/Supply");
+    }
+
+    #[test]
+    fn point_from_discovered_maps_fields_and_enables() {
+        let mut addressing = Addressing::new();
+        addressing.insert("address".into(), serde_json::json!(7));
+        let found = crate::model::DiscoveredPoint {
+            device_key: "PLC9".into(),
+            name: Some("Supply Temp".into()),
+            description: None,
+            units: Some("degC".into()),
+            value: None,
+            addressing: addressing.clone(),
+            suggested_tag_path: "PLC9/SupplyTemp".into(),
+        };
+        let cfg = point_from_discovered(&found, 42);
+        assert!(cfg.enabled);
+        assert_eq!(cfg.device_key, "PLC9");
+        assert_eq!(cfg.tag_path, "PLC9/SupplyTemp");
+        assert_eq!(cfg.addressing, addressing);
+        assert_eq!(cfg.poll_interval_secs, 42);
     }
 
     #[test]

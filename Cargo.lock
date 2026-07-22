@@ -4422,9 +4422,11 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "toml",
+ "uuid",
 ]
 
 [[package]]
@@ -4896,10 +4898,13 @@ dependencies = [
  "proto-api",
  "rand 0.8.6",
  "ratatui",
+ "republish-core",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tokio",
  "tokio-util",
+ "toml",
 ]
 
 [[package]]

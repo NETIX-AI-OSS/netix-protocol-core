@@ -114,6 +114,7 @@ pub fn sanitize_segment(value: &str) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use proto_api::Addressing;
@@ -169,6 +170,61 @@ mod tests {
             validate_publish_topic("Netix/Site/#").unwrap_err(),
             TopicError::Wildcard
         );
+        // The '+' single-level wildcard is rejected too.
+        assert_eq!(
+            validate_publish_topic("Netix/+/temp").unwrap_err(),
+            TopicError::Wildcard
+        );
+    }
+
+    #[test]
+    fn rejects_empty_and_whitespace_topics() {
+        assert_eq!(validate_publish_topic("").unwrap_err(), TopicError::Empty);
+        assert_eq!(
+            validate_publish_topic("   \t ").unwrap_err(),
+            TopicError::Empty
+        );
+    }
+
+    #[test]
+    fn topic_error_display_messages() {
+        assert_eq!(
+            TopicError::Empty.to_string(),
+            "MQTT publish topic cannot be empty"
+        );
+        assert_eq!(
+            TopicError::Wildcard.to_string(),
+            "MQTT publish topic cannot contain # or +"
+        );
+    }
+
+    #[test]
+    fn default_tag_path_falls_back_to_literal_device_when_key_blank() {
+        // Blank device_key and no addressing -> literal "device" segment.
+        let p = point("   ", &[], "");
+        assert_eq!(default_tag_path(&p), "device");
+    }
+
+    #[test]
+    fn default_tag_path_uses_device_alone_when_no_addressing() {
+        // Device present but no addressing values -> just the sanitised device.
+        let p = point("Boiler Room", &[], "");
+        assert_eq!(default_tag_path(&p), "Boiler_Room");
+    }
+
+    #[test]
+    fn default_tag_path_skips_null_and_empty_addressing_values() {
+        // json_scalar(Null) yields "" which is filtered out, leaving addr empty.
+        let p = point("dev", &[("property", serde_json::Value::Null)], "");
+        assert_eq!(default_tag_path(&p), "dev");
+    }
+
+    #[test]
+    fn sanitize_segment_collapses_runs_of_underscores() {
+        // Multiple illegal chars in a row collapse to a single underscore, and
+        // leading/trailing underscores are trimmed.
+        assert_eq!(sanitize_segment("__a///b  c__"), "a_b_c");
+        assert_eq!(sanitize_segment("#+ /"), "");
     }
 
     #[test]

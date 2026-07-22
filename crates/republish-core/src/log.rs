@@ -67,8 +67,16 @@ impl LogBuffer {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_level_display_labels() {
+        assert_eq!(LogLevel::Info.to_string(), "INFO");
+        assert_eq!(LogLevel::Warning.to_string(), "WARN");
+        assert_eq!(LogLevel::Error.to_string(), "ERROR");
+    }
 
     #[test]
     fn new_buffer_is_empty() {

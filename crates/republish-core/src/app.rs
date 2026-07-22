@@ -152,7 +152,12 @@ struct RepublisherApp {
     stop_flag: Option<Arc<AtomicBool>>,
     recent_samples: VecDeque<PointSample>,
     statuses: HashMap<PointIdentity, PointStatus>,
+    /// Local enqueue attempts (samples handed to the MQTT channel). NOT proof of
+    /// delivery — see [`RepublisherApp::acked_total`].
     published_total: usize,
+    /// Broker-confirmed deliveries (running total of QoS 1 PubAcks). The honest
+    /// "delivered" figure the operator should trust.
+    acked_total: usize,
 
     channel: WorkerChannel,
     logs: LogBuffer,
@@ -208,6 +213,7 @@ impl RepublisherApp {
             recent_samples: VecDeque::new(),
             statuses: HashMap::new(),
             published_total: 0,
+            acked_total: 0,
             channel: WorkerChannel::new(),
             logs,
         };
@@ -573,12 +579,14 @@ impl RepublisherApp {
         let stop = Arc::new(AtomicBool::new(false));
         self.stop_flag = Some(Arc::clone(&stop));
         self.published_total = 0;
+        self.acked_total = 0;
         spawn_republisher(
             self.channel.sender.clone(),
             factory,
             self.config.connection(),
             self.config.mqtt.clone(),
             self.config.points.clone(),
+            self.config.discover_on_start,
             stop,
         );
         self.save_status(LogLevel::Info, "Republisher starting…");
@@ -638,6 +646,9 @@ impl RepublisherApp {
                 }
                 WorkerEvent::PublishStatus(stats) => {
                     self.published_total += stats.published;
+                    // `acked` is a running broker-confirmed total, so track the
+                    // latest value rather than summing per-cycle deltas.
+                    self.acked_total = self.acked_total.max(stats.acked);
                 }
                 WorkerEvent::PointPublish { identity, error } => {
                     let status = self.statuses.entry(identity).or_default();
@@ -743,10 +754,21 @@ impl RepublisherApp {
             ),
             ui::metric(
                 palette,
-                "Published",
+                "Queued",
                 self.published_total.to_string(),
-                "samples",
-                ChipKind::Success,
+                "enqueued",
+                ChipKind::Neutral,
+            ),
+            ui::metric(
+                palette,
+                "Delivered",
+                self.acked_total.to_string(),
+                "broker-acked",
+                if self.acked_total > 0 || self.published_total == 0 {
+                    ChipKind::Success
+                } else {
+                    ChipKind::Warning
+                },
             ),
             ui::metric(
                 palette,
@@ -1172,10 +1194,21 @@ impl RepublisherApp {
             ),
             ui::metric(
                 palette,
-                "Published",
+                "Queued",
                 self.published_total.to_string(),
-                "samples",
-                ChipKind::Accent
+                "enqueued",
+                ChipKind::Neutral
+            ),
+            ui::metric(
+                palette,
+                "Delivered",
+                self.acked_total.to_string(),
+                "broker-acked",
+                if self.acked_total > 0 || self.published_total == 0 {
+                    ChipKind::Success
+                } else {
+                    ChipKind::Warning
+                }
             ),
             ui::metric(
                 palette,

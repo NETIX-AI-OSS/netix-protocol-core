@@ -17,11 +17,9 @@
 use std::collections::HashMap;
 
 use proto_api::base_key;
+use republish_core::defaults;
 
 use crate::config::{ConfigError, SimulatorConfig};
-
-/// Default per-point poll cadence written into the emitted config.
-const POLL_INTERVAL_SECS: u64 = 30;
 
 /// Minimal TOML basic-string escaping for the identifiers we emit.
 fn toml_escape(value: &str) -> String {
@@ -53,7 +51,16 @@ pub fn emit_republisher_config(
          # Regenerate whenever the simulator config changes so BACnet addresses stay in sync.\n\n",
     );
     out.push_str("version = 2\n");
-    out.push_str("protocol = \"bacnet\"\n\n");
+    out.push_str("protocol = \"bacnet\"\n");
+    // Provenance marker: the checksum of the simulator config this file was
+    // emitted from. A loader (`AppConfig::check_sim_config_drift`) compares it
+    // against the current simulator config's checksum to detect drift — the sim
+    // config changed but this file was never regenerated, so its addresses are
+    // stale. Top-level key, so it must precede every `[table]` below.
+    out.push_str(&format!(
+        "sim_config_checksum = \"{}\"\n\n",
+        toml_escape(&config.checksum()?)
+    ));
 
     out.push_str("[connections.bacnet]\n");
     out.push_str("discover_all_interfaces = true\n");
@@ -65,18 +72,34 @@ pub fn emit_republisher_config(
     out.push_str("device_backoff_max_secs = 300\n");
     out.push_str("bind_failure_policy = \"skip\"\n\n");
 
+    // Every value below comes from the SAME shared defaults the config struct
+    // uses (`republish_core::defaults`), so the emitted config can never diverge
+    // from the built-in struct defaults.
     out.push_str("[mqtt]\n");
     out.push_str(&format!("host = \"{}\"\n", toml_escape(mqtt_host)));
-    out.push_str("port = 8883\n");
-    out.push_str("use_tls = true\n");
-    out.push_str("client_id = \"netix-republisher\"\n");
+    out.push_str(&format!("port = {}\n", defaults::MQTT_PORT));
+    out.push_str(&format!("use_tls = {}\n", defaults::USE_TLS));
+    // Per-instance-unique id so two republishers can't kick each other off the broker.
+    out.push_str(&format!(
+        "client_id = \"{}\"\n",
+        toml_escape(&defaults::generate_client_id())
+    ));
     out.push_str("topic_prefix = \"Netix/Site\"\n");
     out.push_str("health_topic = \"Netix/Site/_health/republisher\"\n");
-    out.push_str("payload_format = \"netix_envelope\"\n");
-    out.push_str("device_topic_prefix = \"/Netix/Sim/Device\"\n");
+    out.push_str(&format!(
+        "payload_format = \"{}\"\n",
+        defaults::PAYLOAD_FORMAT.as_config_token()
+    ));
+    out.push_str(&format!(
+        "device_topic_prefix = \"{}\"\n",
+        toml_escape(defaults::DEVICE_TOPIC_PREFIX)
+    ));
     out.push_str("retain = false\n");
-    out.push_str("keep_alive_secs = 30\n");
-    out.push_str("autostart = true\n\n");
+    out.push_str(&format!(
+        "keep_alive_secs = {}\n",
+        defaults::KEEP_ALIVE_SECS
+    ));
+    out.push_str(&format!("autostart = {}\n\n", defaults::AUTOSTART));
 
     out.push_str(&format!(
         "# {point_total} points across {} devices.\n\n",
@@ -95,7 +118,10 @@ pub fn emit_republisher_config(
             out.push_str("enabled = true\n");
             out.push_str(&format!("device_key = \"{}\"\n", toml_escape(&device_key)));
             out.push_str(&format!("tag_path = \"{}\"\n", toml_escape(&point.label)));
-            out.push_str(&format!("poll_interval_secs = {POLL_INTERVAL_SECS}\n\n"));
+            out.push_str(&format!(
+                "poll_interval_secs = {}\n\n",
+                defaults::POLL_INTERVAL_SECS
+            ));
             out.push_str("[points.addressing]\n");
             out.push_str(&format!("device_instance = {}\n", device.device_id));
             out.push_str(&format!(
@@ -186,6 +212,20 @@ mod tests {
         assert!(toml.contains("payload_format = \"netix_envelope\""));
         assert!(toml.contains("device_topic_prefix = \"/Netix/Sim/Device\""));
         assert!(toml.contains("host = \"mqtt.example\""));
+        // Emitted MQTT settings come from the shared defaults, so they match the
+        // config struct defaults exactly (no emit-vs-struct divergence).
+        assert!(toml.contains(&format!("port = {}", defaults::MQTT_PORT)));
+        assert!(toml.contains(&format!("use_tls = {}", defaults::USE_TLS)));
+        assert!(toml.contains(&format!("keep_alive_secs = {}", defaults::KEEP_ALIVE_SECS)));
+        assert!(toml.contains(&format!(
+            "poll_interval_secs = {}",
+            defaults::POLL_INTERVAL_SECS
+        )));
+        // autostart defaults OFF (safety) — the operator starts deliberately.
+        assert!(toml.contains(&format!("autostart = {}", defaults::AUTOSTART)));
+        // Per-instance-unique, prefixed client id (not the old shared constant).
+        assert!(toml.contains(&format!("client_id = \"{}", defaults::CLIENT_ID_PREFIX)));
+        assert!(!toml.contains("client_id = \"netix-republisher\""));
         // count==1 instance -> device_key is the bare tag_identifier.
         assert!(toml.contains("device_key = \"ahu-12\""));
         assert!(toml.contains("tag_path = \"discharge-air-temp\""));
@@ -196,5 +236,57 @@ mod tests {
         // one addressing table per point.
         assert_eq!(toml.matches("[[points]]").count(), 2);
         assert_eq!(toml.matches("[points.addressing]").count(), 2);
+    }
+
+    #[test]
+    fn duplicate_base_key_falls_back_to_full_device_name() {
+        // count == 2 -> instance names "ahu-12-001" and "ahu-12-002" both strip to
+        // the same base_key "ahu-12", which therefore can't be a unique envelope id.
+        // The emitter must fall back to the full device name for the device_key.
+        let mut cfg = config();
+        cfg.instances[0].count = 2;
+        let toml = emit_republisher_config(&cfg, "mqtt.example").unwrap();
+        assert!(
+            toml.contains("device_key = \"ahu-12-001\""),
+            "device_key must fall back to the full name, got:\n{toml}"
+        );
+        assert!(toml.contains("device_key = \"ahu-12-002\""));
+        // The bare (colliding) base_key must NOT be emitted as a device_key.
+        assert!(
+            !toml.contains("device_key = \"ahu-12\""),
+            "collapsing base_key must not be used as device_key when it is shared"
+        );
+    }
+
+    #[test]
+    fn emits_sim_config_checksum_that_round_trips_and_detects_drift() {
+        use republish_core::config::AppConfig;
+
+        let cfg = config();
+        let toml = emit_republisher_config(&cfg, "mqtt.example").unwrap();
+
+        // The emitted config carries the provenance checksum of the sim config.
+        let expected = cfg.checksum().unwrap();
+        assert!(
+            toml.contains(&format!("sim_config_checksum = \"{expected}\"")),
+            "emitted toml must stamp the sim_config_checksum, got:\n{toml}"
+        );
+        // Canonical hashing is deterministic across calls.
+        assert_eq!(expected, cfg.checksum().unwrap());
+
+        // A loader parses the marker and finds no drift against the same config.
+        let loaded: AppConfig = toml::from_str(&toml).unwrap();
+        assert_eq!(loaded.sim_config_checksum(), Some(expected.as_str()));
+        assert_eq!(loaded.check_sim_config_drift(&expected), None);
+
+        // Mutate the sim config -> its checksum changes -> drift is detected.
+        let mut drifted = cfg.clone();
+        drifted.instances[0].count = 3;
+        let new_checksum = drifted.checksum().unwrap();
+        assert_ne!(new_checksum, expected);
+        assert!(
+            loaded.check_sim_config_drift(&new_checksum).is_some(),
+            "a changed sim config must be flagged as drift"
+        );
     }
 }

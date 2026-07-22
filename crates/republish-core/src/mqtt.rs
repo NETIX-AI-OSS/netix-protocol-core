@@ -1,7 +1,9 @@
 use crate::config::MqttConfig;
 use crate::model::{PointSample, PublishStats};
 use anyhow::{anyhow, Context, Result};
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, TlsConfiguration, Transport};
+use rumqttc::{
+    AsyncClient, ConnectReturnCode, Event, MqttOptions, Packet, QoS, TlsConfiguration, Transport,
+};
 use serde_json::json;
 use std::fs;
 use std::future::Future;
@@ -27,6 +29,28 @@ pub trait MqttPublisher {
         payload: Vec<u8>,
         retain: bool,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+
+    /// Running total of transport reconnects observed by the publisher. Default 0
+    /// for publishers that do not maintain a broker link (fakes/tests).
+    fn reconnect_count(&self) -> usize {
+        0
+    }
+
+    /// Running total of broker-confirmed QoS 1 deliveries. Default 0.
+    fn acked_count(&self) -> usize {
+        0
+    }
+
+    /// The last transient connection error observed, if any. Default `None`.
+    fn last_connection_error(&self) -> Option<String> {
+        None
+    }
+
+    /// A fatal, non-self-healing connection rejection (bad auth/not authorized),
+    /// if the broker has rejected the link. Default `None`.
+    fn connection_fatal_error(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +82,10 @@ impl ReconnectBackoff {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HealthSnapshot {
+    /// Samples enqueued to the outbound channel (local attempts, not delivery).
     pub published: usize,
+    /// Broker-confirmed deliveries (running total of QoS 1 PubAcks).
+    pub acked: usize,
     pub failed_reads: usize,
     pub failed_publishes: usize,
     pub stale_points: usize,
@@ -80,15 +107,46 @@ impl HealthSnapshot {
 struct ConnectionState {
     connected: AtomicBool,
     reconnects: AtomicUsize,
+    /// Running total of broker-confirmed QoS 1 deliveries (PubAcks).
+    acked: AtomicUsize,
+    /// Sticky flag set when the broker *rejects* the connection with a non-Success
+    /// CONNACK return code (bad username/password, not authorized, …). Unlike a
+    /// transport drop this will not self-heal on retry, so it is surfaced as a
+    /// fatal connection error rather than counted as a reconnect.
+    fatal: AtomicBool,
     last_error: Mutex<Option<String>>,
 }
 
 impl ConnectionState {
-    fn record_connack(&self) {
-        self.connected.store(true, Ordering::Relaxed);
-        if let Ok(mut last_error) = self.last_error.lock() {
-            *last_error = None;
+    /// Handle a broker CONNACK. A `Success` code means the link is live; any other
+    /// code is a fatal auth/config rejection — the connection is NOT counted as up
+    /// (see [`ConnectionState::record_fatal`]).
+    fn record_connack(&self, code: ConnectReturnCode) {
+        if code == ConnectReturnCode::Success {
+            self.connected.store(true, Ordering::Relaxed);
+            self.fatal.store(false, Ordering::Relaxed);
+            if let Ok(mut last_error) = self.last_error.lock() {
+                *last_error = None;
+            }
+        } else {
+            self.record_fatal(connack_error_message(code));
         }
+    }
+
+    /// Record a fatal, non-self-healing connection error (broker rejected the
+    /// connection). Marks the link down and sets the sticky `fatal` flag so the
+    /// error is surfaced to the operator instead of being silently retried.
+    fn record_fatal(&self, error: impl Into<String>) {
+        self.connected.store(false, Ordering::Relaxed);
+        self.fatal.store(true, Ordering::Relaxed);
+        if let Ok(mut last_error) = self.last_error.lock() {
+            *last_error = Some(error.into());
+        }
+    }
+
+    /// Count a broker-confirmed QoS 1 delivery.
+    fn record_puback(&self) {
+        self.acked.fetch_add(1, Ordering::Relaxed);
     }
 
     fn record_error(&self, error: impl Into<String>) {
@@ -97,6 +155,62 @@ impl ConnectionState {
         }
         if let Ok(mut last_error) = self.last_error.lock() {
             *last_error = Some(error.into());
+        }
+    }
+
+    #[cfg(test)]
+    fn connection_fatal_error_for_test(&self) -> Option<String> {
+        if self.fatal.load(Ordering::Relaxed) {
+            self.last_error.lock().ok().and_then(|value| value.clone())
+        } else {
+            None
+        }
+    }
+}
+
+/// Human-readable explanation for a non-Success MQTT CONNACK return code.
+fn connack_error_message(code: ConnectReturnCode) -> String {
+    let reason = match code {
+        ConnectReturnCode::Success => "connection accepted",
+        ConnectReturnCode::RefusedProtocolVersion => "unacceptable protocol version",
+        ConnectReturnCode::BadClientId => "client identifier rejected",
+        ConnectReturnCode::ServiceUnavailable => "service unavailable",
+        ConnectReturnCode::BadUserNamePassword => "bad username or password",
+        ConnectReturnCode::NotAuthorized => "not authorized",
+    };
+    format!(
+        "MQTT broker refused the connection: {reason} (CONNACK {code:?}); \
+         check credentials and broker permissions"
+    )
+}
+
+/// Apply one polled event-loop result to the shared connection state. This is the
+/// per-iteration body of the spawned poll loop, factored out so the packet-handling
+/// arms are unit-testable without a live broker. Returns `Some(delay)` when the poll
+/// errored and the caller must back off before polling again; `None` otherwise.
+fn apply_poll(
+    state: &ConnectionState,
+    backoff: &mut ReconnectBackoff,
+    polled: std::result::Result<Event, rumqttc::ConnectionError>,
+) -> Option<Duration> {
+    match polled {
+        Ok(Event::Incoming(Packet::ConnAck(connack))) => {
+            // Inspect the return code: a non-Success code (bad auth, not
+            // authorized, …) is a fatal rejection, NOT a healthy connection.
+            // record_connack sets the fatal error state.
+            state.record_connack(connack.code);
+            backoff.reset();
+            None
+        }
+        Ok(Event::Incoming(Packet::PubAck(_))) => {
+            // Broker confirmed a QoS 1 delivery — the honest counter.
+            state.record_puback();
+            None
+        }
+        Ok(_) => None,
+        Err(error) => {
+            state.record_error(error.to_string());
+            Some(backoff.next_delay())
         }
     }
 }
@@ -109,6 +223,10 @@ pub struct RumqttPublisher {
 
 impl RumqttPublisher {
     /// Must be called from within a tokio runtime: the event loop runs in a spawned task.
+    // coverage(off): builds MqttOptions and spawns the live rumqttc event-loop task;
+    // the per-poll dispatch logic is unit-tested separately via `apply_poll`, and the
+    // spawned task body only makes progress against a live broker.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(config: &MqttConfig) -> Result<Self> {
         let mut options = MqttOptions::new(&config.client_id, &config.host, config.port);
         options.set_keep_alive(Duration::from_secs(config.keep_alive_secs.max(5)));
@@ -131,16 +249,10 @@ impl RumqttPublisher {
             async move {
                 let mut backoff = ReconnectBackoff::default();
                 loop {
-                    match eventloop.poll().await {
-                        Ok(Event::Incoming(Packet::ConnAck(_))) => {
-                            state.record_connack();
-                            backoff.reset();
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
-                            state.record_error(error.to_string());
-                            sleep(backoff.next_delay()).await;
-                        }
+                    // apply_poll handles one polled result and returns Some(delay)
+                    // only when the poll failed and we must back off before retrying.
+                    if let Some(delay) = apply_poll(&state, &mut backoff, eventloop.poll().await) {
+                        sleep(delay).await;
                     }
                 }
             }
@@ -169,13 +281,9 @@ impl RumqttPublisher {
         let mut stats = PublishStats::empty();
         for sample in samples {
             stats.queued += 1;
-            let payload = match serde_json::to_vec(&sample.value.as_json_value()) {
-                Ok(payload) => payload,
-                Err(error) => {
-                    stats.record_failure(error.to_string());
-                    continue;
-                }
-            };
+            // as_json_value() yields a serde_json::Value; serializing one is infallible.
+            let payload = serde_json::to_vec(&sample.value.as_json_value())
+                .expect("serde_json::Value always serializes");
             match self.enqueue(&sample.topic, payload, config.retain) {
                 Ok(()) => stats.published += 1,
                 Err(error) => stats.record_failure(error.to_string()),
@@ -183,23 +291,21 @@ impl RumqttPublisher {
         }
 
         stats.reconnects = self.reconnect_count();
+        stats.acked = self.acked_count();
         if stats.last_error.is_none() {
             stats.last_error = self.last_connection_error();
         }
         stats
     }
 
-    pub(crate) fn try_enqueue_sample(
-        &self,
-        topic: &str,
-        payload: Vec<u8>,
-        retain: bool,
-    ) -> Result<()> {
-        self.enqueue(topic, payload, retain)
-    }
-
     pub fn reconnect_count(&self) -> usize {
         self.state.reconnects.load(Ordering::Relaxed)
+    }
+
+    /// Running total of broker-confirmed QoS 1 deliveries (PubAcks). The honest
+    /// "delivered" counter — distinct from local enqueue attempts.
+    pub fn acked_count(&self) -> usize {
+        self.state.acked.load(Ordering::Relaxed)
     }
 
     pub fn last_connection_error(&self) -> Option<String> {
@@ -208,6 +314,17 @@ impl RumqttPublisher {
             .lock()
             .ok()
             .and_then(|value| value.clone())
+    }
+
+    /// A human message when the broker has *rejected* the connection (bad auth,
+    /// not authorized, …) — a fatal, non-self-healing error worth surfacing to the
+    /// operator. `None` while the connection is healthy or only transiently down.
+    pub fn connection_fatal_error(&self) -> Option<String> {
+        if self.state.fatal.load(Ordering::Relaxed) {
+            self.last_connection_error()
+        } else {
+            None
+        }
     }
 }
 
@@ -227,6 +344,37 @@ impl MqttPublisher for RumqttPublisher {
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move { self.enqueue(topic, payload, retain) })
     }
+
+    // The trait accessors read the same shared connection state as the inherent
+    // methods (accessed directly here to avoid inherent/trait name resolution
+    // ambiguity), so a generic caller sees identical values to a concrete one.
+    fn reconnect_count(&self) -> usize {
+        self.state.reconnects.load(Ordering::Relaxed)
+    }
+
+    fn acked_count(&self) -> usize {
+        self.state.acked.load(Ordering::Relaxed)
+    }
+
+    fn last_connection_error(&self) -> Option<String> {
+        self.state
+            .last_error
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+    }
+
+    fn connection_fatal_error(&self) -> Option<String> {
+        if self.state.fatal.load(Ordering::Relaxed) {
+            self.state
+                .last_error
+                .lock()
+                .ok()
+                .and_then(|value| value.clone())
+        } else {
+            None
+        }
+    }
 }
 
 pub async fn publish_samples<P: MqttPublisher + Send>(
@@ -238,13 +386,9 @@ pub async fn publish_samples<P: MqttPublisher + Send>(
 
     for sample in samples {
         stats.queued += 1;
-        let payload = match serde_json::to_vec(&sample.value.as_json_value()) {
-            Ok(payload) => payload,
-            Err(error) => {
-                stats.record_failure(error.to_string());
-                continue;
-            }
-        };
+        // as_json_value() yields a serde_json::Value; serializing one is infallible.
+        let payload = serde_json::to_vec(&sample.value.as_json_value())
+            .expect("serde_json::Value always serializes");
 
         match publisher
             .publish(&sample.topic, payload, config.retain)
@@ -265,7 +409,12 @@ pub async fn publish_health<P: MqttPublisher + Send>(
 ) -> Result<()> {
     let payload = json!({
         "status": snapshot.status(),
+        // Local enqueue attempts this interval — NOT proof of delivery.
         "published": snapshot.published,
+        "queued": snapshot.published,
+        // Broker-confirmed deliveries (running total of QoS 1 PubAcks).
+        "acked": snapshot.acked,
+        "delivered": snapshot.acked,
         "failed_reads": snapshot.failed_reads,
         "failed_publishes": snapshot.failed_publishes,
         "stale_points": snapshot.stale_points,
@@ -276,7 +425,8 @@ pub async fn publish_health<P: MqttPublisher + Send>(
     publisher
         .publish(
             &config.health_topic,
-            serde_json::to_vec(&payload).context("failed to encode health payload")?,
+            // payload is a serde_json::Value; serializing one is infallible.
+            serde_json::to_vec(&payload).expect("serde_json::Value always serializes"),
             true,
         )
         .await
@@ -335,6 +485,9 @@ fn load_root_store_from_file(path: &Path) -> Result<rumqttc::tokio_rustls::rustl
     Ok(roots)
 }
 
+// coverage(off): loads the OS trust store; the empty-store error arm only fires on a
+// host with zero system CA certificates, which cannot be forced in a normal test.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn load_native_root_store() -> Result<rumqttc::tokio_rustls::rustls::RootCertStore> {
     let mut roots = rumqttc::tokio_rustls::rustls::RootCertStore::empty();
     let result = rustls_native_certs::load_native_certs();
@@ -373,6 +526,7 @@ fn load_private_key(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::model::{PointConfig, TelemetryValue};
@@ -433,6 +587,7 @@ mod tests {
             &config,
             HealthSnapshot {
                 published: 1,
+                acked: 7,
                 failed_reads: 2,
                 failed_publishes: 3,
                 stale_points: 4,
@@ -446,6 +601,10 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&publisher.calls[0].1).unwrap();
         assert_eq!(payload["status"], "degraded");
         assert_eq!(payload["published"], 1);
+        assert_eq!(payload["queued"], 1);
+        // Broker-confirmed deliveries are surfaced distinctly from local attempts.
+        assert_eq!(payload["acked"], 7);
+        assert_eq!(payload["delivered"], 7);
         assert_eq!(payload["stale_points"], 4);
         assert_eq!(payload["reconnects"], 5);
     }
@@ -477,11 +636,163 @@ mod tests {
             Some("network closed")
         );
 
-        state.record_connack();
+        state.record_connack(ConnectReturnCode::Success);
 
         assert!(state.connected.load(Ordering::Relaxed));
         assert_eq!(state.reconnects.load(Ordering::Relaxed), 1);
         assert_eq!(*state.last_error.lock().unwrap(), None);
+        assert!(state.connection_fatal_error_for_test().is_none());
+    }
+
+    #[test]
+    fn connack_failure_code_sets_fatal_error_and_does_not_connect() {
+        let state = ConnectionState::default();
+
+        // A bad-auth CONNACK must NOT mark the link up, and must surface a fatal,
+        // human-readable error rather than being counted as a reconnect.
+        state.record_connack(ConnectReturnCode::BadUserNamePassword);
+
+        assert!(!state.connected.load(Ordering::Relaxed));
+        assert_eq!(state.reconnects.load(Ordering::Relaxed), 0);
+        assert!(state.fatal.load(Ordering::Relaxed));
+        let message = state.last_error.lock().unwrap().clone().unwrap();
+        assert!(message.contains("bad username or password"), "{message}");
+        assert_eq!(
+            state.connection_fatal_error_for_test().as_deref(),
+            Some(&message[..])
+        );
+
+        // A later successful CONNACK clears the fatal state.
+        state.record_connack(ConnectReturnCode::Success);
+        assert!(state.connected.load(Ordering::Relaxed));
+        assert!(!state.fatal.load(Ordering::Relaxed));
+        assert!(state.connection_fatal_error_for_test().is_none());
+    }
+
+    #[test]
+    fn connack_not_authorized_is_fatal() {
+        let state = ConnectionState::default();
+        state.record_connack(ConnectReturnCode::NotAuthorized);
+        assert!(state.fatal.load(Ordering::Relaxed));
+        assert!(state
+            .last_error
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap()
+            .contains("not authorized"));
+    }
+
+    #[test]
+    fn puback_increments_acked_counter() {
+        let state = ConnectionState::default();
+        assert_eq!(state.acked.load(Ordering::Relaxed), 0);
+        state.record_puback();
+        state.record_puback();
+        assert_eq!(state.acked.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn apply_poll_connack_success_connects_and_resets_backoff() {
+        let state = ConnectionState::default();
+        let mut backoff = ReconnectBackoff::default();
+        // Advance the backoff so we can prove the successful CONNACK rewinds it.
+        backoff.next_delay();
+        backoff.next_delay();
+
+        let event = Event::Incoming(Packet::ConnAck(rumqttc::ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::Success,
+        }));
+        let delay = apply_poll(&state, &mut backoff, Ok(event));
+
+        assert!(delay.is_none());
+        assert!(state.connected.load(Ordering::Relaxed));
+        assert!(state.connection_fatal_error_for_test().is_none());
+        // Backoff was reset back to the initial delay.
+        assert_eq!(backoff.next_delay(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn apply_poll_connack_failure_sets_fatal_error() {
+        let state = ConnectionState::default();
+        let mut backoff = ReconnectBackoff::default();
+
+        let event = Event::Incoming(Packet::ConnAck(rumqttc::ConnAck {
+            session_present: false,
+            code: ConnectReturnCode::NotAuthorized,
+        }));
+        let delay = apply_poll(&state, &mut backoff, Ok(event));
+
+        assert!(delay.is_none());
+        assert!(!state.connected.load(Ordering::Relaxed));
+        assert!(state
+            .connection_fatal_error_for_test()
+            .unwrap()
+            .contains("not authorized"));
+    }
+
+    #[test]
+    fn apply_poll_puback_increments_acked() {
+        let state = ConnectionState::default();
+        let mut backoff = ReconnectBackoff::default();
+
+        let event = Event::Incoming(Packet::PubAck(rumqttc::PubAck::new(1)));
+        let delay = apply_poll(&state, &mut backoff, Ok(event));
+
+        assert!(delay.is_none());
+        assert_eq!(state.acked.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn apply_poll_ignores_other_events() {
+        let state = ConnectionState::default();
+        let mut backoff = ReconnectBackoff::default();
+
+        // An unrelated incoming packet is a no-op: nothing recorded, no backoff.
+        let event = Event::Incoming(Packet::PingResp);
+        let delay = apply_poll(&state, &mut backoff, Ok(event));
+
+        assert!(delay.is_none());
+        assert!(!state.connected.load(Ordering::Relaxed));
+        assert_eq!(state.acked.load(Ordering::Relaxed), 0);
+        assert_eq!(state.reconnects.load(Ordering::Relaxed), 0);
+        assert!(state.last_error.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn apply_poll_error_records_and_returns_backoff_delay() {
+        let state = ConnectionState::default();
+        state.connected.store(true, Ordering::Relaxed);
+        let mut backoff = ReconnectBackoff::default();
+
+        let delay = apply_poll(
+            &state,
+            &mut backoff,
+            Err(rumqttc::ConnectionError::NetworkTimeout),
+        );
+
+        // A poll error yields a sleep delay and records the error as a reconnect.
+        assert_eq!(delay, Some(Duration::from_secs(1)));
+        assert!(!state.connected.load(Ordering::Relaxed));
+        assert_eq!(state.reconnects.load(Ordering::Relaxed), 1);
+        assert!(state
+            .last_error
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap()
+            .contains("timeout"));
+        // A transport error is not a fatal auth/config rejection.
+        assert!(state.connection_fatal_error_for_test().is_none());
+
+        // The next error advances the backoff (proving next_delay was consumed).
+        let delay = apply_poll(
+            &state,
+            &mut backoff,
+            Err(rumqttc::ConnectionError::NetworkTimeout),
+        );
+        assert_eq!(delay, Some(Duration::from_secs(2)));
     }
 
     #[tokio::test]
@@ -571,5 +882,301 @@ mod tests {
             ..MqttConfig::default()
         };
         assert!(build_transport(&cfg).is_ok());
+    }
+
+    #[test]
+    fn health_snapshot_status_is_ok_without_failures() {
+        let snapshot = HealthSnapshot {
+            published: 9,
+            acked: 9,
+            failed_reads: 0,
+            failed_publishes: 0,
+            stale_points: 0,
+            reconnects: 2,
+            last_error: None,
+        };
+        // Reconnects alone do not degrade status — only read/publish/stale failures do.
+        assert_eq!(snapshot.status(), "ok");
+    }
+
+    #[test]
+    fn health_snapshot_status_degrades_on_stale_points_only() {
+        let snapshot = HealthSnapshot {
+            published: 1,
+            acked: 1,
+            failed_reads: 0,
+            failed_publishes: 0,
+            stale_points: 1,
+            reconnects: 0,
+            last_error: None,
+        };
+        assert_eq!(snapshot.status(), "degraded");
+    }
+
+    #[test]
+    fn health_snapshot_is_serializable_snapshot_value() {
+        // The snapshot is a plain value: clone/equality hold so the poll loop can
+        // diff successive snapshots.
+        let snapshot = HealthSnapshot {
+            published: 3,
+            acked: 2,
+            failed_reads: 1,
+            failed_publishes: 0,
+            stale_points: 0,
+            reconnects: 4,
+            last_error: Some("boom".to_string()),
+        };
+        assert_eq!(snapshot.clone(), snapshot);
+    }
+
+    #[test]
+    fn connack_error_message_describes_every_return_code() {
+        // Every non-Success arm must produce an operator-actionable reason, and the
+        // Success arm is still well-formed even though record_connack never routes it here.
+        for (code, needle) in [
+            (ConnectReturnCode::Success, "connection accepted"),
+            (
+                ConnectReturnCode::RefusedProtocolVersion,
+                "unacceptable protocol version",
+            ),
+            (ConnectReturnCode::BadClientId, "client identifier rejected"),
+            (ConnectReturnCode::ServiceUnavailable, "service unavailable"),
+            (
+                ConnectReturnCode::BadUserNamePassword,
+                "bad username or password",
+            ),
+            (ConnectReturnCode::NotAuthorized, "not authorized"),
+        ] {
+            let message = connack_error_message(code);
+            assert!(message.contains(needle), "{code:?}: {message}");
+            assert!(message.contains("MQTT broker refused the connection"));
+        }
+    }
+
+    #[test]
+    fn connack_bad_client_id_and_service_unavailable_are_fatal() {
+        for code in [
+            ConnectReturnCode::RefusedProtocolVersion,
+            ConnectReturnCode::BadClientId,
+            ConnectReturnCode::ServiceUnavailable,
+        ] {
+            let state = ConnectionState::default();
+            state.record_connack(code);
+            assert!(state.fatal.load(Ordering::Relaxed), "{code:?}");
+            assert!(!state.connected.load(Ordering::Relaxed), "{code:?}");
+            assert_eq!(state.reconnects.load(Ordering::Relaxed), 0, "{code:?}");
+            assert!(
+                state.connection_fatal_error_for_test().is_some(),
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_transport_uses_native_roots_with_client_cert_and_no_ca() {
+        // client cert present but no explicit CA → the platform's native root store
+        // is loaded and combined with the client certificate.
+        let dir = tempfile::tempdir().unwrap();
+        let (_, cert_path, key_path) = write_test_tls_material(dir.path());
+        let cfg = MqttConfig {
+            use_tls: true,
+            ca_cert_path: None,
+            client_cert_path: Some(cert_path.to_string_lossy().into_owned()),
+            client_key_path: Some(key_path.to_string_lossy().into_owned()),
+            ..MqttConfig::default()
+        };
+        assert!(matches!(build_transport(&cfg).unwrap(), Transport::Tls(_)));
+    }
+
+    #[test]
+    fn build_transport_rejects_ca_file_without_certificates() {
+        let dir = tempfile::tempdir().unwrap();
+        let bogus_ca = dir.path().join("empty-ca.pem");
+        std::fs::write(&bogus_ca, b"not a certificate at all\n").unwrap();
+        let cfg = MqttConfig {
+            use_tls: true,
+            ca_cert_path: Some(bogus_ca.to_string_lossy().into_owned()),
+            ..MqttConfig::default()
+        };
+        let error = build_transport(&cfg)
+            .err()
+            .expect("expected a CA parse error");
+        assert!(
+            format!("{error:#}").contains("no usable CA certificates"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn rumqtt_publisher_new_requires_a_tokio_runtime() {
+        // Called with no current runtime it must fail fast rather than panic later.
+        let cfg = MqttConfig {
+            use_tls: false,
+            ..MqttConfig::default()
+        };
+        let error = RumqttPublisher::new(&cfg)
+            .err()
+            .expect("expected a missing-runtime error");
+        assert!(
+            format!("{error}").contains("within a tokio runtime"),
+            "{error}"
+        );
+    }
+
+    fn test_sample(topic: &str) -> PointSample {
+        PointSample {
+            point: PointConfig::default(),
+            value: TelemetryValue::Number(1.0),
+            topic: topic.to_string(),
+            timestamp_ms: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn rumqtt_publisher_enqueues_without_a_broker_and_reports_counters() {
+        // A never-reachable broker: the event loop stays in connect/backoff, so
+        // try_publish only enqueues into the outbound channel — no delivery.
+        let cfg = MqttConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            use_tls: false,
+            retain: true,
+            // Non-empty credentials exercise the set_credentials path in new().
+            username: Some("edge".to_string()),
+            password: Some("secret".to_string()),
+            ..MqttConfig::default()
+        };
+        let mut publisher = RumqttPublisher::new(&cfg).unwrap();
+
+        assert_eq!(publisher.reconnect_count(), 0);
+        assert_eq!(publisher.acked_count(), 0);
+        assert!(publisher.connection_fatal_error().is_none());
+
+        let samples = [test_sample("Netix/A"), test_sample("Netix/B")];
+        let stats = publisher.enqueue_samples(&cfg, &samples);
+        assert_eq!(stats.queued, 2);
+        assert_eq!(stats.published, 2);
+        assert_eq!(stats.failed, 0);
+        assert_eq!(stats.acked, 0);
+        assert_eq!(stats.reconnects, 0);
+
+        // Direct enqueue via the trait succeeds too (channel has room).
+        MqttPublisher::publish(&mut publisher, "Netix/C", b"1".to_vec(), false)
+            .await
+            .unwrap();
+        MqttPublisher::publish(&mut publisher, "Netix/D", b"1".to_vec(), true)
+            .await
+            .unwrap();
+        // Drop aborts the background task.
+    }
+
+    #[tokio::test]
+    async fn connection_fatal_error_surfaces_when_state_is_fatal() {
+        // The fatal branch of the public getter is only entered after a broker
+        // *rejects* the connection (a non-Success CONNACK). Arrange that documented
+        // precondition through record_fatal (the same path record_connack uses) and
+        // exercise the real public method — no broker required.
+        let cfg = MqttConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            use_tls: false,
+            ..MqttConfig::default()
+        };
+        let publisher = RumqttPublisher::new(&cfg).unwrap();
+        assert!(publisher.connection_fatal_error().is_none());
+
+        publisher.state.record_fatal("bad username or password");
+        assert_eq!(
+            publisher.connection_fatal_error().as_deref(),
+            Some("bad username or password")
+        );
+    }
+
+    #[tokio::test]
+    async fn rumqtt_publisher_records_transient_error_when_broker_refuses() {
+        // Connecting to a closed local port yields a transport error the event loop
+        // records — a transient (non-fatal) failure, so no fatal error is surfaced.
+        let cfg = MqttConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            use_tls: false,
+            ..MqttConfig::default()
+        };
+        let publisher = RumqttPublisher::new(&cfg).unwrap();
+
+        let mut recorded = None;
+        for _ in 0..100 {
+            if let Some(error) = publisher.last_connection_error() {
+                recorded = Some(error);
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        let recorded = recorded.expect("event loop should have recorded a connection error");
+        assert!(!recorded.is_empty());
+        // A transport refusal is not a fatal auth/config rejection.
+        assert!(publisher.connection_fatal_error().is_none());
+    }
+
+    #[tokio::test]
+    async fn enqueue_samples_counts_failures_when_outbound_channel_is_full() {
+        // With no broker the channel never drains; enqueuing past its capacity forces
+        // try_publish to fail fast so samples are dropped and counted rather than blocking.
+        let cfg = MqttConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            use_tls: false,
+            ..MqttConfig::default()
+        };
+        let mut publisher = RumqttPublisher::new(&cfg).unwrap();
+
+        let overflow = OUTBOUND_CHANNEL_CAPACITY + 500;
+        let samples: Vec<PointSample> = (0..overflow).map(|_| test_sample("Netix/Flood")).collect();
+        let stats = publisher.enqueue_samples(&cfg, &samples);
+
+        assert_eq!(stats.queued, overflow);
+        assert_eq!(stats.published + stats.failed, overflow);
+        assert!(stats.failed > 0, "channel-full drops should be counted");
+        assert!(stats.published <= OUTBOUND_CHANNEL_CAPACITY);
+        assert!(
+            stats
+                .last_error
+                .as_deref()
+                .unwrap()
+                .contains("failed to enqueue MQTT publish"),
+            "{:?}",
+            stats.last_error
+        );
+    }
+
+    #[test]
+    fn trait_default_connection_fatal_error_is_none() {
+        // A publisher that keeps no broker link (FakePublisher does NOT override
+        // connection_fatal_error) must report no fatal error through the trait's
+        // default method. Exercises the trait default body directly.
+        let publisher = FakePublisher::default();
+        assert!(MqttPublisher::connection_fatal_error(&publisher).is_none());
+    }
+
+    #[tokio::test]
+    async fn trait_connection_fatal_error_surfaces_via_ufcs() {
+        // The MqttPublisher trait method is distinct from the inherent method of the
+        // same name (inherent wins at `publisher.connection_fatal_error()`); call the
+        // trait method through UFCS so its fatal arm is exercised. Force the documented
+        // precondition — a broker rejection sets fatal + last_error via record_fatal.
+        let cfg = MqttConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            use_tls: false,
+            ..MqttConfig::default()
+        };
+        let publisher = RumqttPublisher::new(&cfg).unwrap();
+        assert!(MqttPublisher::connection_fatal_error(&publisher).is_none());
+
+        publisher.state.record_fatal("not authorized");
+        assert_eq!(
+            MqttPublisher::connection_fatal_error(&publisher).as_deref(),
+            Some("not authorized")
+        );
     }
 }

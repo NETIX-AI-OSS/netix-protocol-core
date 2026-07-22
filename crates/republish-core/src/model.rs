@@ -16,7 +16,10 @@ pub struct PointConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Human-friendly device/endpoint label (also used in the default topic).
-    #[serde(default)]
+    /// Display label only — NOT part of a point's identity (see [`PointIdentity`]),
+    /// so renaming it never orphans a point's poll/status history. May be spelled
+    /// `device_label` in config.
+    #[serde(default, alias = "device_label")]
     pub device_key: String,
     /// Protocol-native address (e.g. `{object_type, object_instance, property}`,
     /// `{table, address, datatype}`, or `{node_id}`).
@@ -49,6 +52,12 @@ impl PointConfig {
             .map(|(k, v)| format!("{k}={}", json_scalar(v)))
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    /// Human-friendly device label. Alias for [`PointConfig::device_key`]; config
+    /// may spell the field `device_label`, and this accessor returns the same value.
+    pub fn device_label(&self) -> &str {
+        &self.device_key
     }
 
     pub fn display_name(&self) -> String {
@@ -158,8 +167,17 @@ impl fmt::Display for TelemetryValue {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PublishStats {
+    /// Samples handed to the outbound channel this cycle (local enqueue attempts).
     pub queued: usize,
+    /// Samples accepted into the outbound channel this cycle — a *local* enqueue
+    /// success, NOT proof the broker received or accepted them. For real delivery
+    /// see [`PublishStats::acked`].
     pub published: usize,
+    /// Broker-confirmed deliveries (running total of QoS 1 PubAcks seen on the
+    /// connection). This is the honest "delivered" count: it stays flat when the
+    /// broker is unreachable or rejects auth even while `published` keeps climbing
+    /// as samples pile into the local channel.
+    pub acked: usize,
     pub failed: usize,
     pub reconnects: usize,
     pub last_error: Option<String>,
@@ -176,10 +194,12 @@ impl PublishStats {
     }
 }
 
-/// Identity used to dedupe points across imports: device key + addressing.
+/// Identity used to dedupe points and to key poll/status history: the point's
+/// protocol addressing (`device_instance`, `object_type`, `object_instance`,
+/// `property`, …) only. Deliberately independent of `device_key` so renaming a
+/// device's human-friendly label does not orphan a point's poll/status history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointIdentity {
-    pub device_key: String,
     pub addressing: Vec<(String, String)>,
 }
 
@@ -191,16 +211,12 @@ impl PointIdentity {
             .map(|(k, v)| (k.clone(), json_scalar(v)))
             .collect();
         addressing.sort();
-        Self {
-            device_key: point.device_key.trim().to_ascii_lowercase(),
-            addressing,
-        }
+        Self { addressing }
     }
 }
 
 impl Hash for PointIdentity {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.device_key.hash(state);
         self.addressing.hash(state);
     }
 }
@@ -281,12 +297,14 @@ pub fn default_true() -> bool {
 }
 
 pub fn default_poll_interval_secs() -> u64 {
-    10
+    crate::defaults::POLL_INTERVAL_SECS
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     fn point(device: &str, addr: &[(&str, serde_json::Value)]) -> PointConfig {
         let mut addressing = Addressing::new();
@@ -323,6 +341,112 @@ mod tests {
             &[("a", serde_json::json!(1)), ("b", serde_json::json!(2))],
         );
         assert_eq!(PointIdentity::from_point(&a), PointIdentity::from_point(&b));
+    }
+
+    #[test]
+    fn point_identity_is_stable_across_device_key_rename() {
+        // Same addressing, different (renamed) device_key -> identity unchanged,
+        // so poll/status history keyed on PointIdentity is not orphaned.
+        let addr = &[
+            ("device_instance", serde_json::json!(12)),
+            ("object_type", serde_json::json!("analogInput")),
+            ("object_instance", serde_json::json!(3)),
+            ("property", serde_json::json!("presentValue")),
+        ];
+        let before = point("ahu-12", addr);
+        let after = point("ahu-12-renamed", addr);
+
+        let id_before = PointIdentity::from_point(&before);
+        let id_after = PointIdentity::from_point(&after);
+        assert_eq!(id_before, id_after);
+
+        // Hash equality too (identity is used as a HashMap key).
+        let mut set = HashSet::new();
+        set.insert(id_before);
+        assert!(set.contains(&id_after));
+    }
+
+    #[test]
+    fn point_identity_differs_across_distinct_addressing() {
+        // Identical device_key but distinct addressing -> distinct identities.
+        let a = point(
+            "ahu-12",
+            &[
+                ("object_type", serde_json::json!("analogInput")),
+                ("object_instance", serde_json::json!(3)),
+            ],
+        );
+        let b = point(
+            "ahu-12",
+            &[
+                ("object_type", serde_json::json!("analogInput")),
+                ("object_instance", serde_json::json!(4)),
+            ],
+        );
+        assert_ne!(PointIdentity::from_point(&a), PointIdentity::from_point(&b));
+    }
+
+    #[test]
+    fn device_label_alias_deserializes_and_accessor_matches() {
+        // Config may spell the field `device_label`.
+        let cfg: PointConfig =
+            serde_json::from_str(r#"{"device_label":"boiler-3"}"#).expect("device_label alias");
+        assert_eq!(cfg.device_key, "boiler-3");
+        assert_eq!(cfg.device_label(), "boiler-3");
+    }
+
+    #[test]
+    fn addressing_summary_is_sorted_key_value_pairs() {
+        let cfg = point(
+            "dev",
+            &[
+                ("object_type", serde_json::json!("analogInput")),
+                ("object_instance", serde_json::json!(3)),
+                ("device_instance", serde_json::json!(12)),
+            ],
+        );
+        // Addressing iterates in sorted key order; strings render without quotes.
+        assert_eq!(
+            cfg.addressing_summary(),
+            "device_instance=12 object_instance=3 object_type=analogInput"
+        );
+    }
+
+    #[test]
+    fn display_name_uses_device_key_when_present() {
+        let cfg = point("ahu-12", &[("object_instance", serde_json::json!(3))]);
+        assert_eq!(cfg.display_name(), "ahu-12 [object_instance=3]");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_placeholder_when_key_blank_or_whitespace() {
+        // Empty device_key -> "(device)" placeholder.
+        let blank = point("", &[("object_instance", serde_json::json!(3))]);
+        assert_eq!(blank.display_name(), "(device) [object_instance=3]");
+        // Whitespace-only device_key also treated as blank.
+        let ws = point("   ", &[("object_instance", serde_json::json!(3))]);
+        assert_eq!(ws.display_name(), "(device) [object_instance=3]");
+    }
+
+    #[test]
+    fn telemetry_value_display_formats() {
+        // Numbers render with 3 decimal places; text renders verbatim.
+        assert_eq!(TelemetryValue::Number(1.5).to_string(), "1.500");
+        assert_eq!(TelemetryValue::Number(-0.1).to_string(), "-0.100");
+        assert_eq!(TelemetryValue::Text("active".into()).to_string(), "active");
+    }
+
+    #[test]
+    fn point_status_publish_success_and_failure() {
+        let mut status = PointStatus::default();
+        status.record_publish_failure("broker down");
+        assert_eq!(status.last_publish_error.as_deref(), Some("broker down"));
+        // A read failure does not clear the publish error.
+        status.record_read_failure("timeout");
+        assert_eq!(status.last_publish_error.as_deref(), Some("broker down"));
+        // A publish success clears it.
+        status.record_publish_success();
+        assert_eq!(status.last_publish_error, None);
     }
 
     #[test]
