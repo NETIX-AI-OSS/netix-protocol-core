@@ -182,17 +182,27 @@ jobs:
         run: cargo build --manifest-path crates/proto-bacnet/fuzz/Cargo.toml --bin decode_scalar_value
 
   coverage:
-    name: LLVM coverage (informational)
+    name: LLVM coverage (republish-core 100% line gate)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    continue-on-error: true
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      # Nightly so `cargo llvm-cov` sets cfg(coverage_nightly), activating the
+      # `#[coverage(off)]` markers that exclude test modules and the handful of
+      # genuinely-unreachable OS-fault glue paths (config dir resolution, native
+      # cert store, tokio runtime build failure, the live rumqttc event-loop
+      # task). The attribute is inert on stable, so the `check` job is unaffected.
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # nightly
         with:
-          toolchain: stable
+          toolchain: nightly
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      # Enforced: republish-core must keep 100% line coverage (0 uncovered
+      # source lines) on the headless build. Fails the job on any regression.
+      - name: Enforce 100% line coverage (republish-core, headless)
+        run: cargo llvm-cov -p republish-core --no-default-features --fail-uncovered-lines 0
       - name: Install Linux build dependencies (iced GUI)
         run: |
           sudo apt-get update
@@ -200,10 +210,9 @@ jobs:
             pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
             libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
             libegl1-mesa-dev
-      - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
-      - name: Generate coverage report
+      - name: Workspace coverage report (informational)
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-run-fail
+        continue-on-error: true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: lcov-report
