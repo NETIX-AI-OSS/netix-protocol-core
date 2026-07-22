@@ -202,13 +202,12 @@ jobs:
       # Enforced: republish-core must keep 100% line coverage (0 uncovered
       # source lines) on the headless build. Fails the job on any regression.
       - name: Enforce 100% line coverage (republish-core, headless)
-        # Force cfg(coverage_nightly) — some cargo-llvm-cov/runner combos don't
-        # auto-set it, which would leave the #[coverage(off)] markers inert and
-        # wrongly count test-module lines. cargo-llvm-cov appends its own
-        # instrumentation flags to RUSTFLAGS, so coverage still works.
-        env:
-          RUSTFLAGS: "--cfg coverage_nightly"
-        run: cargo llvm-cov -p republish-core --no-default-features --fail-uncovered-lines 0
+        # rust-toolchain.toml pins stable, so invoke nightly explicitly (`+nightly`
+        # overrides the toolchain file). On real nightly, cargo-llvm-cov auto-sets
+        # cfg(coverage_nightly), which activates the #[coverage(off)] markers that
+        # exclude test modules and the unreachable OS-fault glue. (Do NOT force the
+        # cfg via RUSTFLAGS: on stable it would trip #![feature] gates in deps.)
+        run: cargo +nightly llvm-cov -p republish-core --no-default-features --fail-uncovered-lines 0
       - name: Install Linux build dependencies (iced GUI)
         run: |
           sudo apt-get update
