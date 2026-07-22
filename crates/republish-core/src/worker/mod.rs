@@ -76,6 +76,35 @@ fn device_instance(point: &PointConfig) -> Option<u32> {
     }
 }
 
+/// Whether a point's device is currently unavailable to poll — either its I-Am
+/// address is unresolved or it is inside a backoff window. Points with no device
+/// instance (non-BACnet) are never device-blocked.
+fn device_blocked(
+    p: &PointConfig,
+    now: Instant,
+    unresolved_devices: &HashSet<u32>,
+    device_backoffs: &HashMap<u32, DeviceBackoff>,
+) -> bool {
+    device_instance(p).is_some_and(|instance| {
+        unresolved_devices.contains(&instance)
+            || device_backoffs
+                .get(&instance)
+                .is_some_and(|backoff| now < backoff.until)
+    })
+}
+
+/// The broker's fatal-rejection message on the first cycle it appears — `None`
+/// once already reported, or while the connection is healthy. Keeps the poll
+/// loop's fatal check a single flat statement (and separately testable).
+fn fresh_fatal_rejection<P: MqttPublisher>(
+    publisher: &P,
+    already_reported: bool,
+) -> Option<String> {
+    (!already_reported)
+        .then(|| publisher.connection_fatal_error())
+        .flatten()
+}
+
 /// Points eligible for polling this cycle: enabled, resolved, not in backoff,
 /// and past their poll interval.
 fn due_points(
@@ -89,21 +118,13 @@ fn due_points(
         .iter()
         .filter(|p| p.enabled)
         .filter(|p| {
-            if let Some(instance) = device_instance(p) {
-                if unresolved_devices.contains(&instance) {
-                    return false;
-                }
-                if let Some(backoff) = device_backoffs.get(&instance) {
-                    if now < backoff.until {
-                        return false;
-                    }
-                }
+            if device_blocked(p, now, unresolved_devices, device_backoffs) {
+                return false;
             }
             let id = PointIdentity::from_point(p);
-            match last_poll.get(&id) {
-                Some(at) => now.duration_since(*at).as_secs() >= p.poll_interval_secs,
-                None => true,
-            }
+            last_poll
+                .get(&id)
+                .is_none_or(|at| now.duration_since(*at).as_secs() >= p.poll_interval_secs)
         })
         .cloned()
         .collect()
@@ -830,21 +851,18 @@ async fn run_republisher<P: MqttPublisher + Send>(
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
 
-        if !fatal_reported {
-            if let Some(message) = publisher.connection_fatal_error() {
-                // Warn (not Failed): the worker keeps running so the broker
-                // link can recover if credentials are fixed, but the error
-                // is now loud in the log, health payload and last_error —
-                // and the `acked` counter stays at zero so the box no longer
-                // looks healthy while delivering nothing.
-                log(
-                    sender,
-                    LogLevel::Warning,
-                    format!("MQTT connection rejected by broker: {message}"),
-                );
-                last_error = Some(message);
-                fatal_reported = true;
-            }
+        // Warn (not Failed): the worker keeps running so the broker link can
+        // recover if credentials are fixed, but the error is now loud in the
+        // log, health payload and last_error — and the `acked` counter stays at
+        // zero so the box no longer looks healthy while delivering nothing.
+        if let Some(message) = fresh_fatal_rejection(&*publisher, fatal_reported) {
+            log(
+                sender,
+                LogLevel::Warning,
+                format!("MQTT connection rejected by broker: {message}"),
+            );
+            last_error = Some(message);
+            fatal_reported = true;
         }
 
         let mut refreshed_this_iteration = false;
