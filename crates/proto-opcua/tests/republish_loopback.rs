@@ -86,8 +86,7 @@ async fn republisher_browses_and_reads_simulator_over_opcua() {
     let serve = tokio::spawn(async move {
         let _ = adapter.serve(ctx).await;
     });
-    // The simulator seeds the value cache once per second; allow the server to
-    // bind and the first refresh to land.
+    // Sim seeds value cache once/sec; allow bind + first refresh to land.
     tokio::time::sleep(Duration::from_millis(1500)).await;
 
     let mut conn = Addressing::new();

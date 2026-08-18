@@ -77,8 +77,7 @@ async fn handle_request(
                 .map(Response::ReadDiscreteInputs)
                 .ok_or(ExceptionCode::IllegalDataAddress)
         }
-        // The simulator exposes sensor data only; writes and other functions are
-        // rejected.
+        // Simulator exposes sensor data only; writes/other functions rejected.
         _ => Err(ExceptionCode::IllegalFunction),
     }
 }

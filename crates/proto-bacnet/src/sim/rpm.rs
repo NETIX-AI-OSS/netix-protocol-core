@@ -10,8 +10,7 @@ use crate::sim::registry::DeviceEntry;
 
 use super::properties::{encode_property_value_bytes, resolve_property_read, PropertyRead};
 
-// BACnet/IP single-segment APDU ceiling. We don't implement segmentation, so cap encoded
-// RPM ACKs to a safe size and return None (which routes to Error PDU) rather than truncate.
+// No segmentation: cap RPM ACK size, return None (routes to Error PDU).
 const RPM_ACK_MAX_BYTES: usize = 1400;
 
 pub fn handle_read_property_multiple(

@@ -78,9 +78,7 @@ fn sim_config() -> SimulatorConfig {
 #[tokio::test]
 async fn republisher_discovers_browses_and_polls_simulator_over_bacnet() {
     let _serial = serial_guard();
-    // Port 0 binds the simulator on the protocol default (UDP/47808), matching
-    // sim-core's protocol listener behavior. The republish client uses an
-    // ephemeral local bind (connection port 0).
+    // Port 0 binds sim on UDP/47808 default; client uses ephemeral bind.
     let sim_port = 0u16;
 
     let sim = Arc::new(Mutex::new(Simulation::new(&sim_config()).unwrap()));
@@ -121,10 +119,7 @@ async fn republisher_discovers_browses_and_polls_simulator_over_bacnet() {
     );
     assert_eq!(discover.devices.len(), 1, "expected one simulated device");
     let device = discover.devices.into_iter().next().unwrap();
-    // Identity-faithful discovery derives the key from the device OBJECT_NAME
-    // (via `base_key`), not the numeric instance: the simulator names this
-    // single instance "DEV" (from `name_prefix`), which has no numeric suffix to
-    // strip. The instance itself is still carried for browse/refresh.
+    // Key derives from OBJECT_NAME "DEV", not instance; instance kept too.
     assert_eq!(device.key, "DEV");
     assert_eq!(device.instance, Some(DEVICE_INSTANCE));
 
@@ -230,9 +225,7 @@ async fn discover_on_start_builds_identity_faithful_points_and_polls() {
         !points.is_empty(),
         "discover_on_start should build points from the sim"
     );
-    // Identity-faithful: the device key is the OBJECT_NAME ("DEV", from the sim's
-    // `name_prefix`), and no tag path is the discarded `device_<instance>/...`
-    // concatenation the RCA flagged.
+    // Device key is OBJECT_NAME "DEV"; no device_<instance> tag path.
     assert!(
         points.iter().all(|p| p.device_key == "DEV"),
         "device keys should come from OBJECT_NAME: {points:?}"
@@ -257,8 +250,7 @@ async fn discover_on_start_builds_identity_faithful_points_and_polls() {
         "tag path should be the point label/role"
     );
 
-    // The built points resolve and poll to the simulated value, so they are ready
-    // for the publish path the worker drives.
+    // Built points resolve/poll to the simulated value for publish.
     let refresh = proto
         .refresh_devices(&conn, std::slice::from_ref(&DEVICE_INSTANCE))
         .await

@@ -221,8 +221,7 @@ mod tests {
 
     #[test]
     fn sanitize_segment_collapses_runs_of_underscores() {
-        // Multiple illegal chars in a row collapse to a single underscore, and
-        // leading/trailing underscores are trimmed.
+        // Repeated illegal chars collapse to one underscore, ends trimmed.
         assert_eq!(sanitize_segment("__a///b  c__"), "a_b_c");
         assert_eq!(sanitize_segment("#+ /"), "");
     }

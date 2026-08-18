@@ -332,9 +332,7 @@ templates:
       - { label: trouble, object_type: binary_input,
           profile: { kind: constant_bool, value: false } }
 
-# ===================== INSTANCES =====================
-# Each instance block is allocated a contiguous device_id block of `per_template_block` (100)
-# starting at device_id_base + (block_index + 1) * 100.
+# INSTANCES: each block = device_id_base + (block_index+1)*100 (block=100).
 instances:
   - { template: chiller,         name_prefix: "CH",        zone: central_plant,  count: 4 }
   - { template: boiler,          name_prefix: "BLR",       zone: central_plant,  count: 2 }

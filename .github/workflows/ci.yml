@@ -49,8 +49,7 @@ jobs:
           toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-      # Deliberately NO iced/windowing apt packages: headless consumers (the
-      # containerized web republisher) build without them.
+      # Deliberately no iced/windowing packages: headless consumers need none.
       - name: Assert iced is absent from the headless graph
         run: |
           if cargo tree -p republish-core --no-default-features -e normal | grep -q '^.*\biced\b'; then
@@ -187,11 +186,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      # Nightly so `cargo llvm-cov` sets cfg(coverage_nightly), activating the
-      # `#[coverage(off)]` markers that exclude test modules and the handful of
-      # genuinely-unreachable OS-fault glue paths (config dir resolution, native
-      # cert store, tokio runtime build failure, the live rumqttc event-loop
-      # task). The attribute is inert on stable, so the `check` job is unaffected.
+      # Nightly enables #[coverage(off)] (excludes unreachable OS-fault paths).
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # nightly
         with:
           toolchain: nightly
@@ -199,14 +194,9 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
-      # Enforced: republish-core must keep 100% line coverage (0 uncovered
-      # source lines) on the headless build. Fails the job on any regression.
+      # Enforced: republish-core keeps 100% line coverage on the headless build.
       - name: Enforce 100% line coverage (republish-core, headless)
-        # rust-toolchain.toml pins stable, so invoke nightly explicitly (`+nightly`
-        # overrides the toolchain file). On real nightly, cargo-llvm-cov auto-sets
-        # cfg(coverage_nightly), which activates the #[coverage(off)] markers that
-        # exclude test modules and the unreachable OS-fault glue. (Do NOT force the
-        # cfg via RUSTFLAGS: on stable it would trip #![feature] gates in deps.)
+        # `+nightly` activates #[coverage(off)]; don't force via RUSTFLAGS.
         run: cargo +nightly llvm-cov -p republish-core --no-default-features --fail-uncovered-lines 0
       - name: Install Linux build dependencies (iced GUI)
         run: |

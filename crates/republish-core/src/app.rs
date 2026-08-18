@@ -218,9 +218,7 @@ impl RepublisherApp {
             logs,
         };
         app.reset_point_editor();
-        // Unattended deployments (e.g. an edge VM) set `autostart` so publishing
-        // begins on launch with no manual "Start" click. Invalid configs are
-        // reported by start_republisher and simply don't start.
+        // `autostart` publishes on launch; bad configs just don't start.
         if app.config.mqtt.autostart {
             app.start_republisher();
         }
@@ -646,8 +644,7 @@ impl RepublisherApp {
                 }
                 WorkerEvent::PublishStatus(stats) => {
                     self.published_total += stats.published;
-                    // `acked` is a running broker-confirmed total, so track the
-                    // latest value rather than summing per-cycle deltas.
+                    // `acked` is a running total; track latest, not the delta.
                     self.acked_total = self.acked_total.max(stats.acked);
                 }
                 WorkerEvent::PointPublish { identity, error } => {

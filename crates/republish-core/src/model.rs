@@ -345,8 +345,7 @@ mod tests {
 
     #[test]
     fn point_identity_is_stable_across_device_key_rename() {
-        // Same addressing, different (renamed) device_key -> identity unchanged,
-        // so poll/status history keyed on PointIdentity is not orphaned.
+        // Renamed device_key -> identity unchanged; poll history not orphaned.
         let addr = &[
             ("device_instance", serde_json::json!(12)),
             ("object_type", serde_json::json!("analogInput")),

@@ -3,11 +3,7 @@ resolver = "2"
 members = ["crates/proto-api", "crates/sim-core", "crates/proto-bacnet", "crates/proto-modbus", "crates/proto-opcua", "crates/republish-core"]
 exclude = ["crates/proto-bacnet/fuzz"]
 
-# Patched bacnet-transport: keeps broadcast destination port at 47808 when the
-# local bind port is ephemeral (port = 0), which upstream breaks. Used by the
-# proto-bacnet republish adapter. Kept as a patch-path (not a workspace member)
-# so `fmt`/`clippy --workspace` don't touch the vendored source. The
-# netix-republisher binary repo vendors its own copy and re-applies this patch.
+# Patched bacnet-transport for ephemeral-port broadcast; re-applied downstream.
 [patch.crates-io]
 bacnet-transport = { path = "crates/proto-bacnet/vendor/bacnet-transport" }
 
@@ -39,9 +35,7 @@ toml = "0.9"
 # Internal crates.
 proto-api = { path = "crates/proto-api" }
 sim-core = { path = "crates/sim-core" }
-# Headless by default so protocol adapters never drag the iced GUI stack into
-# non-GUI consumers (e.g. the containerized web republisher); GUI binaries
-# enable the `gui` feature on their direct republish-core dependency.
+# Headless by default so adapters skip iced GUI; opt in via `gui` feature.
 republish-core = { path = "crates/republish-core", default-features = false }
 proto-bacnet = { path = "crates/proto-bacnet" }
 proto-modbus = { path = "crates/proto-modbus" }

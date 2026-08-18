@@ -17,9 +17,7 @@ use tokio::time::sleep;
 
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
-// Bounds how many QoS 1 publishes can sit waiting for the event loop. While the broker
-// is unreachable the channel fills and try_publish() fails fast — samples are dropped
-// and counted, never blocking the poll loop. Sized for full-fleet bursts (~1500 points).
+// Bounds queued QoS1 publishes; unreachable broker fails fast, counts drops.
 const OUTBOUND_CHANNEL_CAPACITY: usize = 4096;
 
 pub trait MqttPublisher {
@@ -195,9 +193,7 @@ fn apply_poll(
 ) -> Option<Duration> {
     match polled {
         Ok(Event::Incoming(Packet::ConnAck(connack))) => {
-            // Inspect the return code: a non-Success code (bad auth, not
-            // authorized, …) is a fatal rejection, NOT a healthy connection.
-            // record_connack sets the fatal error state.
+            // Non-Success CONNACK is fatal; record_connack sets that state.
             state.record_connack(connack.code);
             backoff.reset();
             None
@@ -223,9 +219,7 @@ pub struct RumqttPublisher {
 
 impl RumqttPublisher {
     /// Must be called from within a tokio runtime: the event loop runs in a spawned task.
-    // coverage(off): builds MqttOptions and spawns the live rumqttc event-loop task;
-    // the per-poll dispatch logic is unit-tested separately via `apply_poll`, and the
-    // spawned task body only makes progress against a live broker.
+    // coverage(off): live rumqttc loop; poll dispatch tested separately.
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(config: &MqttConfig) -> Result<Self> {
         let mut options = MqttOptions::new(&config.client_id, &config.host, config.port);
@@ -240,17 +234,13 @@ impl RumqttPublisher {
         let (client, mut eventloop) = AsyncClient::new(options, OUTBOUND_CHANNEL_CAPACITY);
         let state = Arc::new(ConnectionState::default());
 
-        // The event loop runs in its own task so the request channel always drains.
-        // Driving it from the publishing task deadlocks: once the channel fills,
-        // publish().await blocks waiting for space that only the (then never-polled)
-        // event loop could free.
+        // Event loop runs in its own task so the request channel always drains.
         let eventloop_task = runtime.spawn({
             let state = Arc::clone(&state);
             async move {
                 let mut backoff = ReconnectBackoff::default();
                 loop {
-                    // apply_poll handles one polled result and returns Some(delay)
-                    // only when the poll failed and we must back off before retrying.
+                    // apply_poll returns Some(delay) only if backoff is needed.
                     if let Some(delay) = apply_poll(&state, &mut backoff, eventloop.poll().await) {
                         sleep(delay).await;
                     }
@@ -345,9 +335,7 @@ impl MqttPublisher for RumqttPublisher {
         Box::pin(async move { self.enqueue(topic, payload, retain) })
     }
 
-    // The trait accessors read the same shared connection state as the inherent
-    // methods (accessed directly here to avoid inherent/trait name resolution
-    // ambiguity), so a generic caller sees identical values to a concrete one.
+    // Trait accessors read the same state as inherent methods; values match.
     fn reconnect_count(&self) -> usize {
         self.state.reconnects.load(Ordering::Relaxed)
     }
@@ -485,8 +473,7 @@ fn load_root_store_from_file(path: &Path) -> Result<rumqttc::tokio_rustls::rustl
     Ok(roots)
 }
 
-// coverage(off): loads the OS trust store; the empty-store error arm only fires on a
-// host with zero system CA certificates, which cannot be forced in a normal test.
+// coverage(off): empty trust store needs zero system CA certs.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn load_native_root_store() -> Result<rumqttc::tokio_rustls::rustls::RootCertStore> {
     let mut roots = rumqttc::tokio_rustls::rustls::RootCertStore::empty();
@@ -648,8 +635,7 @@ mod tests {
     fn connack_failure_code_sets_fatal_error_and_does_not_connect() {
         let state = ConnectionState::default();
 
-        // A bad-auth CONNACK must NOT mark the link up, and must surface a fatal,
-        // human-readable error rather than being counted as a reconnect.
+        // Bad-auth CONNACK must not mark link up; surface fatal, not reconnect.
         state.record_connack(ConnectReturnCode::BadUserNamePassword);
 
         assert!(!state.connected.load(Ordering::Relaxed));
@@ -915,8 +901,7 @@ mod tests {
 
     #[test]
     fn health_snapshot_is_serializable_snapshot_value() {
-        // The snapshot is a plain value: clone/equality hold so the poll loop can
-        // diff successive snapshots.
+        // Snapshot is a plain value: clone/equality let the poll loop diff it.
         let snapshot = HealthSnapshot {
             published: 3,
             acked: 2,
@@ -931,8 +916,7 @@ mod tests {
 
     #[test]
     fn connack_error_message_describes_every_return_code() {
-        // Every non-Success arm must produce an operator-actionable reason, and the
-        // Success arm is still well-formed even though record_connack never routes it here.
+        // Every non-Success arm needs an actionable reason too.
         for (code, needle) in [
             (ConnectReturnCode::Success, "connection accepted"),
             (
@@ -974,8 +958,7 @@ mod tests {
 
     #[test]
     fn build_transport_uses_native_roots_with_client_cert_and_no_ca() {
-        // client cert present but no explicit CA → the platform's native root store
-        // is loaded and combined with the client certificate.
+        // No explicit CA + client cert -> native root store loads and combines.
         let dir = tempfile::tempdir().unwrap();
         let (_, cert_path, key_path) = write_test_tls_material(dir.path());
         let cfg = MqttConfig {
@@ -1034,8 +1017,7 @@ mod tests {
 
     #[tokio::test]
     async fn rumqtt_publisher_enqueues_without_a_broker_and_reports_counters() {
-        // A never-reachable broker: the event loop stays in connect/backoff, so
-        // try_publish only enqueues into the outbound channel — no delivery.
+        // Unreachable broker: loop stays in backoff; try_publish only enqueues.
         let cfg = MqttConfig {
             host: "127.0.0.1".to_string(),
             port: 1,
@@ -1072,10 +1054,7 @@ mod tests {
 
     #[tokio::test]
     async fn connection_fatal_error_surfaces_when_state_is_fatal() {
-        // The fatal branch of the public getter is only entered after a broker
-        // *rejects* the connection (a non-Success CONNACK). Arrange that documented
-        // precondition through record_fatal (the same path record_connack uses) and
-        // exercise the real public method — no broker required.
+        // Fatal getter fires only after a rejected CONNACK, via record_fatal.
         let cfg = MqttConfig {
             host: "127.0.0.1".to_string(),
             port: 1,
@@ -1094,8 +1073,7 @@ mod tests {
 
     #[tokio::test]
     async fn rumqtt_publisher_records_transient_error_when_broker_refuses() {
-        // Connecting to a closed local port yields a transport error the event loop
-        // records — a transient (non-fatal) failure, so no fatal error is surfaced.
+        // Closed local port yields a transient error; no fatal error surfaced.
         let cfg = MqttConfig {
             host: "127.0.0.1".to_string(),
             port: 1,
@@ -1120,8 +1098,7 @@ mod tests {
 
     #[tokio::test]
     async fn enqueue_samples_counts_failures_when_outbound_channel_is_full() {
-        // With no broker the channel never drains; enqueuing past its capacity forces
-        // try_publish to fail fast so samples are dropped and counted rather than blocking.
+        // No broker: channel never drains, so enqueue past capacity fails fast.
         let cfg = MqttConfig {
             host: "127.0.0.1".to_string(),
             port: 1,
@@ -1151,19 +1128,14 @@ mod tests {
 
     #[test]
     fn trait_default_connection_fatal_error_is_none() {
-        // A publisher that keeps no broker link (FakePublisher does NOT override
-        // connection_fatal_error) must report no fatal error through the trait's
-        // default method. Exercises the trait default body directly.
+        // No-broker-link publisher reports no fatal error via trait default.
         let publisher = FakePublisher::default();
         assert!(MqttPublisher::connection_fatal_error(&publisher).is_none());
     }
 
     #[tokio::test]
     async fn trait_connection_fatal_error_surfaces_via_ufcs() {
-        // The MqttPublisher trait method is distinct from the inherent method of the
-        // same name (inherent wins at `publisher.connection_fatal_error()`); call the
-        // trait method through UFCS so its fatal arm is exercised. Force the documented
-        // precondition — a broker rejection sets fatal + last_error via record_fatal.
+        // Call trait method (not inherent) via UFCS; force fatal state first.
         let cfg = MqttConfig {
             host: "127.0.0.1".to_string(),
             port: 1,

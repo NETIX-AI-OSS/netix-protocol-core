@@ -79,9 +79,7 @@ pub struct CliArgs {
 pub fn parse_args() -> CliArgs {
     let mut no_tui = false;
     let mut emit_republisher_config = None;
-    // An explicit config from `CONFIG_PATH`, `--config`, or a bare positional is
-    // honoured exactly. Only when none is given do we fall back to the
-    // directory-aware default lookup (see `default_config_path`).
+    // Explicit config source wins; else fall back to directory lookup.
     let mut explicit_config: Option<PathBuf> = std::env::var("CONFIG_PATH").ok().map(PathBuf::from);
 
     let mut args = std::env::args().skip(1);
@@ -186,8 +184,7 @@ pub fn run(
 
     let rt = tokio::runtime::Runtime::new()?;
 
-    // Simulation tick loop — protocol-agnostic, owned by the core. Advances all
-    // point values once per second using wall-clock elapsed time.
+    // Tick loop, protocol-agnostic: advances points once/sec by elapsed time.
     {
         let sim_clone = sim_arc.clone();
         let cancel_tick = cancel.clone();
@@ -384,8 +381,7 @@ mod tests {
     fn pick_config_path_defaults_to_first_when_none_exist() {
         let cwd = PathBuf::from("config.yaml");
         let beside_exe = PathBuf::from("/opt/netix/config.yaml");
-        // Neither exists -> first candidate (working dir), which the caller then
-        // seeds with the bundled sample.
+        // Neither exists -> working dir, seeded by caller with the sample.
         let picked = pick_config_path(&[cwd.clone(), beside_exe], |_| false);
         assert_eq!(picked, cwd);
     }

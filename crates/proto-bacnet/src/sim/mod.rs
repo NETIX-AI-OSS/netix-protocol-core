@@ -75,9 +75,7 @@ impl SimProtocol for BacnetSimProtocol {
                         handle_datagram(&socket, &buf[..len], src, &ctx.sim, &devices, &ctx.metrics, &ctx.log).await;
                     }
                     Err(e) => {
-                        // On Windows, an ICMP Port Unreachable for a datagram we previously
-                        // sent (e.g. an I-Am to a client port that has since closed) surfaces
-                        // as WSAECONNRESET on the next recv. The socket is fine; skip noise.
+                        // Windows: stale ICMP can surface as WSAECONNRESET.
                         if e.kind() == std::io::ErrorKind::ConnectionReset {
                             continue;
                         }
@@ -182,8 +180,7 @@ async fn handle_confirmed_request(
 
     let Some(apdu_bytes) = response else {
         let error = apdu::build_error_pdu(invoke_id, service_choice, 0, 31);
-        // Resolve to an Option here so the non-Send `Box<dyn Error>` is dropped
-        // before the await — keeps the async_trait future `Send`.
+        // Option drops non-Send Box<dyn Error> before await; future stays Send.
         let packet = wrap_unicast_npdu(&error).ok();
         if let Some(packet) = packet {
             let _ = socket.send_to(&packet, src).await;
