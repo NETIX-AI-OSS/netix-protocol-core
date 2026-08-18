@@ -215,8 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn adapter_async_methods_dispatch_through_trait_object() {
-        // Drive the async trait methods via dynamic dispatch so the trait's own
-        // signatures and the built adapter's stub bodies are exercised.
+        // Dynamic dispatch exercises the trait's signatures and stub bodies.
         let mut reg = RepublishRegistry::new();
         reg.register("alpha", make_alpha);
         let proto = reg.build("alpha").expect("adapter should build");

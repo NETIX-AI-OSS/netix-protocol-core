@@ -234,10 +234,8 @@ mod tests {
         let raw: f64 = 1234.5678;
         let bits = raw.to_bits();
         let bytes = bits.to_be_bytes();
-        let mut packet = vec![0x55u8, 0x08]; // tag=5, extended-length indicator (length_code=5 means next byte is length)
-                                             // Actually tag=5 uses length_code in lower 3 bits. 8 > 4 so length_code=5 (extended).
-                                             // Format: first byte = (tag<<4)|(5), second byte = actual length (8)
-                                             // first byte: (5 << 4) | 5 = 0x55, second byte: 8
+        // tag=5, length_code=5 (extended, 8>4): byte0=(5<<4)|5=0x55, byte1=8.
+        let mut packet = vec![0x55u8, 0x08]; // tag=5, extended-length indicator
         packet.push(0x08);
         packet.extend_from_slice(&bytes);
         // Correct: first byte 0x55 = tag 5, length_code 5 = extended; second byte = 8

@@ -311,9 +311,7 @@ impl RepublishProtocol for BacnetRepublishProtocol {
     async fn discover(&self, conn: &Addressing) -> Result<DiscoverOutcome> {
         let interfaces = ipv4_interfaces();
         let cfg = parse_conn(conn, &interfaces);
-        // Dedupe by numeric device instance, not by key: identity-faithful keys
-        // derived from OBJECT_NAME can collide across distinct devices, and we
-        // must not silently drop a device just because it shares a base name.
+        // Dedupe by instance; OBJECT_NAME keys can collide across devices.
         let mut by_instance: HashMap<u32, DiscoveredDevice> = HashMap::new();
         let mut warnings = Vec::new();
 
@@ -607,10 +605,7 @@ fn discovered_point_from_object(
     addressing.insert("object_type".into(), serde_json::json!(type_name.clone()));
     addressing.insert("object_instance".into(), serde_json::json!(object_instance));
     addressing.insert("property".into(), serde_json::json!("present_value"));
-    // Identity-faithful tag path: prefer the point's DESCRIPTION (the clean
-    // role the simulator emits, matching `{device_key}-{tag_path}` seeded tags),
-    // then OBJECT_NAME, then a synthetic type+instance label. Never prefix with
-    // the device key — the historian joins them itself.
+    // Tag path: DESCRIPTION, else OBJECT_NAME, else type+instance; no prefix.
     let suggested_tag_path = description
         .clone()
         .or_else(|| name.clone())

@@ -36,8 +36,7 @@ pub fn emit_republisher_config(
 ) -> Result<String, ConfigError> {
     let devices = config.expand()?;
 
-    // A name_prefix shared by several devices (count > 1) can't be a unique
-    // envelope id; fall back to the full device name for those.
+    // Shared name_prefix can't id one device; fall back to the full name.
     let mut key_counts: HashMap<&str, usize> = HashMap::new();
     for device in &devices {
         *key_counts.entry(base_key(&device.name)).or_insert(0) += 1;
@@ -52,11 +51,7 @@ pub fn emit_republisher_config(
     );
     out.push_str("version = 2\n");
     out.push_str("protocol = \"bacnet\"\n");
-    // Provenance marker: the checksum of the simulator config this file was
-    // emitted from. A loader (`AppConfig::check_sim_config_drift`) compares it
-    // against the current simulator config's checksum to detect drift — the sim
-    // config changed but this file was never regenerated, so its addresses are
-    // stale. Top-level key, so it must precede every `[table]` below.
+    // Sim-config checksum for drift detection; must precede every [table].
     out.push_str(&format!(
         "sim_config_checksum = \"{}\"\n\n",
         toml_escape(&config.checksum()?)
@@ -72,9 +67,7 @@ pub fn emit_republisher_config(
     out.push_str("device_backoff_max_secs = 300\n");
     out.push_str("bind_failure_policy = \"skip\"\n\n");
 
-    // Every value below comes from the SAME shared defaults the config struct
-    // uses (`republish_core::defaults`), so the emitted config can never diverge
-    // from the built-in struct defaults.
+    // Values below come from republish_core::defaults; can't diverge from it.
     out.push_str("[mqtt]\n");
     out.push_str(&format!("host = \"{}\"\n", toml_escape(mqtt_host)));
     out.push_str(&format!("port = {}\n", defaults::MQTT_PORT));
@@ -212,8 +205,7 @@ mod tests {
         assert!(toml.contains("payload_format = \"netix_envelope\""));
         assert!(toml.contains("device_topic_prefix = \"/Netix/Sim/Device\""));
         assert!(toml.contains("host = \"mqtt.example\""));
-        // Emitted MQTT settings come from the shared defaults, so they match the
-        // config struct defaults exactly (no emit-vs-struct divergence).
+        // Emitted MQTT settings match the config struct's shared defaults.
         assert!(toml.contains(&format!("port = {}", defaults::MQTT_PORT)));
         assert!(toml.contains(&format!("use_tls = {}", defaults::USE_TLS)));
         assert!(toml.contains(&format!("keep_alive_secs = {}", defaults::KEEP_ALIVE_SECS)));
@@ -240,9 +232,7 @@ mod tests {
 
     #[test]
     fn duplicate_base_key_falls_back_to_full_device_name() {
-        // count == 2 -> instance names "ahu-12-001" and "ahu-12-002" both strip to
-        // the same base_key "ahu-12", which therefore can't be a unique envelope id.
-        // The emitter must fall back to the full device name for the device_key.
+        // count==2 -> both strip to base_key "ahu-12"; falls back to full name.
         let mut cfg = config();
         cfg.instances[0].count = 2;
         let toml = emit_republisher_config(&cfg, "mqtt.example").unwrap();

@@ -154,9 +154,7 @@ mod tests {
     fn elapsed_is_non_decreasing() {
         let mut buf = LogBuffer::new(10);
         buf.push(LogLevel::Info, "first");
-        // A tiny sleep is not ideal, but elapsed() resolution on all platforms
-        // should be enough to show that two consecutive pushes record a
-        // non-negative elapsed difference.
+        // elapsed() resolution should show consecutive pushes are non-negative.
         buf.push(LogLevel::Info, "second");
 
         let entries: Vec<_> = buf.entries().iter().collect();

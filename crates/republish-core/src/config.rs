@@ -299,8 +299,7 @@ impl AppConfig {
                     point.display_name()
                 ));
             }
-            // In envelope mode the per-point scalar topic is unused; the device
-            // topic is validated above instead.
+            // Envelope: per-point topic unused, device topic checked above.
             if point.enabled && !envelope {
                 validate_publish_topic(&telemetry_topic(&self.mqtt, point)).map_err(|error| {
                     format!("{} MQTT topic is invalid: {error}", point.display_name())
@@ -386,9 +385,7 @@ impl Default for UiPreferences {
     }
 }
 
-// coverage(off): resolves the OS config directory; ProjectDirs::from returns None
-// (hitting the error arm) only when the OS reports no home/config dir, which cannot
-// be forced in a normal test.
+// coverage(off): None only when OS reports no home/config dir.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn config_path() -> Result<PathBuf> {
     let project_dirs = ProjectDirs::from("com", "netix", "republisher")
@@ -408,10 +405,7 @@ fn config_path_unavailable_fallback(error: anyhow::Error) -> (AppConfig, PathBuf
 }
 
 pub fn load_or_default() -> (AppConfig, PathBuf, String) {
-    // config_path() only errs when the OS reports no config dir (unforceable; both it and
-    // config_path_unavailable_fallback are coverage(off)). map_or_else dispatches the
-    // tested loader on success without leaving an OS-fault-only branch in this measured
-    // function; the tested body lives in load_config_at.
+    // config_path() errs only on unforceable OS fault; kept untested here.
     config_path().map_or_else(config_path_unavailable_fallback, load_config_at)
 }
 
@@ -441,17 +435,13 @@ pub fn load_from_path(path: &Path) -> Result<AppConfig> {
     if let Some(message) = plaintext_secret_warning(&config.mqtt) {
         log::warn!("{message}");
     }
-    // Env indirection wins over anything on disk: if `password_env` names a set
-    // variable, the password comes from the environment, not the file.
+    // A set `password_env` var overrides the on-disk password.
     config.mqtt.resolve_password_env();
     Ok(config)
 }
 
 pub fn save_to_path(path: &Path, config: &AppConfig) -> Result<()> {
-    // `path.parent().map(...).transpose()?` rather than `if let Some(parent) { ...?; }`:
-    // the `?` sits at statement level instead of before the block's closing brace, so
-    // there is no llvm-cov zero-count gap region on that brace. Behavior is identical
-    // (None => Ok(None) => no-op; Some => create the directory or propagate the error).
+    // `?` at statement level avoids an llvm-cov gap; behavior is identical.
     path.parent()
         .map(|parent| {
             fs::create_dir_all(parent)
@@ -548,8 +538,7 @@ mod tests {
         assert!(!mqtt.resolve_password_env());
         assert_eq!(mqtt.password.as_deref(), Some("keep-me"));
 
-        // The env-var name is safe to persist (it is not the secret itself),
-        // and the resolved secret is stripped from a save with remember_secrets off.
+        // Env-var name is safe to persist; secret dropped if remember off.
         let config = AppConfig {
             mqtt: MqttConfig {
                 password_env: Some(var.to_string()),
@@ -632,8 +621,7 @@ mod tests {
         let loaded = load_from_path(&path).unwrap();
 
         assert_eq!(loaded.protocol, "modbus");
-        // discover_on_start is serialized and survives the round-trip; a config
-        // file predating the field still parses (serde default = false).
+        // discover_on_start round-trips; older files default to false.
         assert!(loaded.discover_on_start);
         assert!(!AppConfig::default().discover_on_start);
         assert_eq!(loaded.points.len(), 1);
@@ -731,8 +719,7 @@ mod tests {
 
     #[test]
     fn payload_format_defaults_envelope_and_round_trips() {
-        // Default is the Netix envelope so a hand/GUI config matches the pipeline
-        // (and the simulator emit) without extra tweaking — one source of truth.
+        // Default is Netix envelope so GUI configs match the pipeline as-is.
         assert_eq!(
             MqttConfig::default().payload_format,
             PayloadFormat::NetixEnvelope
@@ -782,8 +769,7 @@ mod tests {
 
     #[test]
     fn payload_format_display_and_config_token() {
-        // The config token must match the serde snake_case rename exactly so the
-        // simulator emit and the deserialised value never drift.
+        // Config token must match serde rename so emit and parse never drift.
         assert_eq!(PayloadFormat::Scalar.as_config_token(), "scalar");
         assert_eq!(
             PayloadFormat::NetixEnvelope.as_config_token(),
@@ -837,8 +823,7 @@ mod tests {
     #[test]
     fn validate_rejects_invalid_health_topic() {
         let mut config = AppConfig::default();
-        // A wildcard is illegal in a publish topic; the health topic is validated
-        // verbatim (unlike per-point topics it is not sanitised first).
+        // Wildcard illegal in publish topic; health topic validated verbatim.
         config.mqtt.health_topic = "Netix/Site/#".into();
         assert!(config
             .validate()
@@ -848,10 +833,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_point_whose_scalar_topic_is_empty() {
-        // Scalar mode validates each enabled point's telemetry topic. A prefix that
-        // survives the non-empty check but normalises to nothing ("#"), paired with
-        // a tag_path that sanitises to nothing ("###"), yields an empty publish
-        // topic -> the per-point map_err error message closure fires.
+        // Scalar: prefix "#" + tag_path "###" both sanitise to empty topic.
         let mut config = AppConfig::default();
         config.mqtt.payload_format = PayloadFormat::Scalar;
         config.mqtt.topic_prefix = "#".into();
@@ -871,8 +853,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_scalar_mode_with_enabled_point() {
-        // Scalar mode exercises the per-point telemetry-topic validation branch
-        // (skipped in envelope mode). A sane point passes.
+        // Scalar mode exercises per-point topic validation (skipped envelope).
         let mut config = AppConfig::default();
         config.mqtt.payload_format = PayloadFormat::Scalar;
         config.points.push(PointConfig {
@@ -940,8 +921,7 @@ mod tests {
             "a non-default port is not a legacy default and must be left alone"
         );
 
-        // A v1 bacnet connection with the port key absent defaults to 47808 and is
-        // rewritten to the sentinel 0.
+        // v1 bacnet conn with no port key defaults 47808, becomes sentinel 0.
         let mut config = AppConfig {
             version: 1,
             ..AppConfig::default()
@@ -997,8 +977,7 @@ mod tests {
 
     #[test]
     fn load_defaults_version_and_resolves_env_on_load() {
-        // A file omitting `version` deserialises via the serde default
-        // (current_version) and is then migrated to the current version.
+        // File omitting `version` uses serde default, then migrates to current.
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.toml");
         let var = "REPUBLISH_CORE_TEST_PW_ENV_LOAD_E5F6";
@@ -1018,8 +997,7 @@ mod tests {
 
     #[test]
     fn save_then_load_preserves_remembered_plaintext_secret() {
-        // remember_secrets = true keeps the plaintext secret through a save/load
-        // (both save and load emit the plaintext warning path).
+        // remember_secrets=true keeps plaintext secret through save/load.
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.toml");
         let config = AppConfig {
@@ -1054,8 +1032,7 @@ mod tests {
 
     #[test]
     fn save_errors_when_parent_cannot_be_created() {
-        // A regular file standing where a parent directory should be makes
-        // create_dir_all fail, surfacing the path-bearing context.
+        // A file blocking a parent dir makes create_dir_all fail with context.
         let temp = tempfile::tempdir().unwrap();
         let blocker = temp.path().join("blocker");
         fs::write(&blocker, "not a directory").unwrap();
@@ -1066,10 +1043,7 @@ mod tests {
 
     #[test]
     fn config_path_and_load_or_default_via_xdg() {
-        // config_path()/load_or_default() resolve a real OS config dir; pin it to a
-        // temp dir via XDG_CONFIG_HOME so the three load_or_default branches are
-        // deterministic. XDG_CONFIG_HOME is process-global, so all assertions live
-        // in this single serial test.
+        // XDG_CONFIG_HOME pins config dir (process-global); tests run serial.
         let temp = tempfile::tempdir().unwrap();
         let prev = std::env::var_os("XDG_CONFIG_HOME");
         std::env::set_var("XDG_CONFIG_HOME", temp.path());
@@ -1078,8 +1052,7 @@ mod tests {
         assert!(path.ends_with("republisher/config.toml"), "got {path:?}");
         assert!(path.starts_with(temp.path()));
 
-        // No file yet -> defaults with the "using default configuration" message.
-        // (Full equality can't be used: a fresh default mints a random client_id.)
+        // No file -> defaults message; equality unusable (client_id is random).
         let (config, reported, message) = load_or_default();
         assert_eq!(config.protocol, "");
         assert!(config.points.is_empty());

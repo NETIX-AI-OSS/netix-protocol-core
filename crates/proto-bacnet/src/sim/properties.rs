@@ -402,8 +402,7 @@ mod tests {
 
     #[test]
     fn point_present_value_enumerated_for_binary() {
-        // BinaryPV must be served as Enumerated 0/1, not Application Boolean, so
-        // republishers surface it as numeric 0/1 rather than "true"/"false".
+        // BinaryPV serves as Enumerated 0/1, not Boolean, so it's numeric.
         let (sim, registry) = make_simulation_and_registry(vec![pt(
             "run",
             "binary_input",

@@ -218,8 +218,7 @@ mod tests {
 
     #[test]
     fn device_without_numeric_instance_is_ignored() {
-        // A non-numeric device_instance resolves to None, so the point neither
-        // clears nor escalates a backoff.
+        // Non-numeric device_instance -> None: no clear, no escalate.
         let now = Instant::now();
         let mut backoffs = HashMap::new();
         let mut addressing = Addressing::new();

@@ -463,8 +463,7 @@ async fn browse_variables(
                     });
                 }
                 NodeClass::Object => {
-                    // The OPC UA core hierarchy (ns 0) is server plumbing, not
-                    // user data — don't descend into it.
+                    // OPC UA core hierarchy (ns 0) is plumbing; skip it.
                     if child_id.namespace == 0 || depth + 1 > MAX_BROWSE_DEPTH {
                         continue;
                     }

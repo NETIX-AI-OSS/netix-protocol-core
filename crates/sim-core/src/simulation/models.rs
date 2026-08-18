@@ -70,8 +70,7 @@ impl SimulatedDevice {
 
     pub fn tick(&mut self, dt: f32, now_secs: f64, occupancy: f32, outside_temp: f32) {
         let mut siblings: HashMap<String, f32> = HashMap::with_capacity(self.points.len());
-        // Pre-seed with current values so DerivedConstant/Integrator referencing yet-unticked
-        // points still get a stable starting value.
+        // Pre-seed values so yet-unticked point references get a stable start.
         for p in &self.points {
             if let Some(v) = p.value.as_f32() {
                 siblings.insert(p.label.clone(), v);

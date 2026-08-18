@@ -671,8 +671,7 @@ pub async fn discover_points(
         }
     }
 
-    // Identity-keyed dedupe via the shared merge (the same path the GUI bulk scan
-    // uses), starting from an empty base so we get exactly the discovered set.
+    // Identity-keyed dedupe via shared merge, from empty, for discovered set.
     let merged = merge_imported_points(&[], &imported);
     Ok((merged.points, warnings))
 }
@@ -698,10 +697,7 @@ pub fn spawn_republisher(
             let _ = sender.send(WorkerEvent::Lifecycle(RepublisherLifecycle::Starting));
             let proto = factory();
 
-            // Resolve the working point set BEFORE opening the broker link. With no
-            // enabled points we either discover-then-poll (discover_on_start) or
-            // fail loud — never enter the loop with an empty due set and publish
-            // nothing silently (RCA #2/#4).
+            // Resolve points before the broker link, then poll, or fail loud.
             let mut points = points;
             if !points.iter().any(|p| p.enabled) {
                 let discovery_supported = supports_discovery(proto.capabilities());
@@ -737,8 +733,7 @@ pub fn spawn_republisher(
                         }
                     }
                 }
-                // Still nothing to publish: warn loud and fail the lifecycle rather
-                // than looping forever over an empty point set.
+                // Nothing to publish: warn loud and fail, don't loop forever.
                 if !points.iter().any(|p| p.enabled) {
                     let message = no_points_message(discover_on_start, discovery_supported);
                     log(&sender, LogLevel::Warning, message.clone());
@@ -842,19 +837,13 @@ async fn run_republisher<P: MqttPublisher + Send>(
     let mut reconnects = 0usize;
     let mut acked = 0usize;
     let mut last_error: Option<String> = None;
-    // A broker auth/config rejection (bad password, not authorized) never
-    // self-heals, so warn the operator once instead of publishing into a
-    // channel that will never be delivered — the "looks healthy, delivers
-    // nothing" failure this RCA targets.
+    // Auth rejection never self-heals; warn once, don't publish into the void.
     let mut fatal_reported = false;
 
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
 
-        // Warn (not Failed): the worker keeps running so the broker link can
-        // recover if credentials are fixed, but the error is now loud in the
-        // log, health payload and last_error — and the `acked` counter stays at
-        // zero so the box no longer looks healthy while delivering nothing.
+        // Warn not Failed: keeps running for recovery; acked stays 0 meanwhile.
         if let Some(message) = fresh_fatal_rejection(&*publisher, fatal_reported) {
             log(
                 sender,
@@ -1153,8 +1142,7 @@ mod tests {
 
     #[test]
     fn record_unresolved_failures_noop_when_no_enabled_point_matches() {
-        // The unresolved set is non-empty, but no enabled point references those
-        // devices -> nothing is emitted and no status is touched.
+        // Unresolved set non-empty but unreferenced -> nothing emitted/touched.
         let (tx, rx) = unbounded();
         let points = vec![bacnet_point(1, true)]; // device 1, but 999 is unresolved
         let unresolved = HashSet::from([999u32]);
@@ -1274,9 +1262,7 @@ mod tests {
 
     #[test]
     fn zero_points_without_discover_fails_loud() {
-        // No enabled points + discover_on_start=false must emit a Failed lifecycle
-        // event (not spin forever). The empty-points check short-circuits before
-        // the MQTT publisher is created, so no broker is needed here.
+        // No points + discover_on_start=false -> Failed before MQTT is created.
         let (tx, rx) = unbounded();
         let stop = Arc::new(AtomicBool::new(false));
         spawn_republisher(
@@ -1300,9 +1286,7 @@ mod tests {
 
     #[test]
     fn zero_points_with_discover_but_no_devices_fails_loud() {
-        // discover_on_start=true against a manual-only adapter (no discovery) also
-        // fails loud rather than spinning — surfacing that the protocol can't
-        // self-describe.
+        // discover_on_start=true with no discovery support also fails loud.
         let (tx, rx) = unbounded();
         let stop = Arc::new(AtomicBool::new(false));
         spawn_republisher(
@@ -1478,13 +1462,7 @@ mod tests {
         assert_eq!(status.get(&id).unwrap().consecutive_failures, 1);
     }
 
-    // ---- A scripted fake protocol driven via `conn` flags ---------------------
-    //
-    // The republisher factory type is a bare `fn()` pointer that cannot capture
-    // state, so scenario configuration is threaded through the `conn` Addressing
-    // (which the worker forwards to every protocol call). This keeps a single
-    // fake + factory yet lets each test pick discover/browse/poll/refresh
-    // behavior race-free (each call gets its own `conn`).
+    // Fake protocol: scenario rides `conn` (fn-pointer can't capture state).
     struct ScriptedProto;
 
     fn scripted_caps() -> &'static Capabilities {
@@ -1661,12 +1639,7 @@ mod tests {
         }
     }
 
-    // ---- A broker-free MqttPublisher fake for driving run_republisher ---------
-    //
-    // Records the topics it publishes and can be told to fail every publish
-    // (exercising the loop's publish-failure and health-failure branches) or to
-    // report a fatal broker rejection (the "connection rejected" branch) — none of
-    // which need a real broker.
+    // Broker-free fake: can fail every publish or report a fatal rejection.
     #[derive(Default)]
     struct FakePublisher {
         published: Vec<String>,
@@ -1842,8 +1815,7 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, WorkerEvent::PublishStatus(_))));
-        // Health published (on the first tick) to the configured health topic, and
-        // at least one telemetry publish to a different topic.
+        // Health published on first tick, plus one telemetry publish elsewhere.
         assert!(
             publisher.published.contains(&mqtt.health_topic),
             "expected a health publish, got: {:?}",
@@ -1912,8 +1884,7 @@ mod tests {
         let mqtt = offline_mqtt(PayloadFormat::Scalar);
         let points = vec![bacnet_point(42, true)];
         let proto = RefreshScript::recovering();
-        // Keepalive far away so the re-resolution branch (not the full keepalive)
-        // is what fires and recovers device 42.
+        // Far keepalive: re-resolution fires (not keepalive), recovers dev 42.
         let intervals = LoopIntervals {
             keepalive: Duration::from_secs(60),
             ..tiny_intervals()
@@ -1963,8 +1934,7 @@ mod tests {
         let mqtt = offline_mqtt(PayloadFormat::Scalar);
         let points = vec![bacnet_point(42, true)];
         let proto = RefreshScript::recovering();
-        // Tiny keepalive, far-away re-resolve: the full keepalive refresh is what
-        // fires (covering its Ok arm) and recovers device 42.
+        // Tiny keepalive, far re-resolve: keepalive fires, recovers dev 42.
         let intervals = LoopIntervals {
             keepalive: Duration::from_millis(3),
             reresolve: Duration::from_secs(60),
@@ -2006,8 +1976,7 @@ mod tests {
         let conn = Addressing::new();
         let mqtt = offline_mqtt(PayloadFormat::Scalar);
         let points = vec![bacnet_point(42, true)];
-        // Initial refresh reports device 42 unresolved (so the re-resolve branch is
-        // eligible), then every later refresh errors — covering its Err arm.
+        // Initial refresh: dev 42 unresolved; every later refresh then errors.
         let proto = RefreshScript::failing();
         let intervals = LoopIntervals {
             keepalive: Duration::from_secs(60),
@@ -2088,8 +2057,7 @@ mod tests {
         let mqtt = offline_mqtt(PayloadFormat::Scalar);
         let points = vec![bacnet_point(10, true)];
 
-        // tiny keepalive => the keepalive refresh fires (and also fails) inside the
-        // loop, distinct from the initial pre-loop refresh failure.
+        // Tiny keepalive: refresh fires and fails, distinct from initial.
         let (_, mut events) = tokio::join!(
             run_republisher(
                 &tx,
@@ -2505,8 +2473,7 @@ mod tests {
             true,
             Arc::clone(&stop),
         );
-        // Drive until a publish cycle completes (proves it built points, entered
-        // the loop, polled, and published without a broker).
+        // Drive until publish completes: built, looped, polled, published.
         let events = collect_until(&rx, Duration::from_secs(6), |e| {
             matches!(e, WorkerEvent::PublishStatus(_))
         });
@@ -2603,8 +2570,7 @@ mod tests {
     fn spawn_republisher_warns_and_skips_unresolved_devices() {
         let (tx, rx) = unbounded();
         let stop = Arc::new(AtomicBool::new(false));
-        // Device 42 is reported unresolved by refresh -> its points are skipped
-        // and a Failures event is emitted rather than polling it.
+        // Dev 42 unresolved by refresh -> points skipped, Failures emitted.
         let mut conn = Addressing::new();
         conn.insert("unresolved".into(), serde_json::json!([42]));
         let points = vec![bacnet_point(42, true)];
@@ -2646,8 +2612,7 @@ mod tests {
             false,
             Arc::clone(&stop),
         );
-        // Refresh failing is non-fatal: the worker still reaches Running and (with
-        // no unresolved set) polls the point.
+        // Refresh failure is non-fatal: worker reaches Running and polls.
         let events = collect_until(&rx, Duration::from_secs(6), |e| {
             matches!(e, WorkerEvent::PublishStatus(_))
         });
@@ -2776,8 +2741,7 @@ mod tests {
         let mut publisher =
             RumqttPublisher::new(&offline_mqtt(PayloadFormat::NetixEnvelope)).unwrap();
         let mqtt = offline_mqtt(PayloadFormat::NetixEnvelope);
-        // Distinct devices -> one envelope publish each, so enqueues pile up and
-        // eventually fail once the outbound channel is saturated.
+        // Distinct devices -> one publish each; enqueues saturate the channel.
         let mut status = HashMap::new();
         let samples: Vec<PointSample> = (0..6000u32)
             .map(|i| {
@@ -2917,8 +2881,7 @@ mod tests {
 
     #[test]
     fn spawn_republisher_emits_graceful_shutdown_lifecycle() {
-        // Cover the Stopping -> (drain grace) -> Stopped tail: stop the worker and
-        // wait past CLIENT_STOP_TIMEOUT for the final lifecycle events.
+        // Covers Stopping->drain->Stopped: stop, wait past CLIENT_STOP_TIMEOUT.
         let (tx, rx) = unbounded();
         let stop = Arc::new(AtomicBool::new(false));
         spawn_republisher(

@@ -203,20 +203,13 @@ async fn falls_back_to_single_read_after_rpm_timeout() {
 
 #[tokio::test]
 async fn discovers_identity_faithful_key_and_tag_path() {
-    // A simulator-shaped device: OBJECT_NAME "ahu-12-001" on the Device object,
-    // and a point whose DESCRIPTION is the clean role "discharge-air-temp".
-    // Discovery must derive device_key = "ahu-12" (base_key) and
-    // tag_path = "discharge-air-temp" (DESCRIPTION), with no key prefix — so the
-    // historian tag "{device_key}-{tag_path}" matches the seeded demo tag.
+    // device_key from OBJECT_NAME, tag_path from DESCRIPTION, no prefix.
     let (mut client, mut server_net, mut server_rx) = start_pair(500).await;
     send_i_am(&mut server_net, client.local_mac(), DEVICE_INSTANCE).await;
     sleep(Duration::from_millis(100)).await;
 
     let server = tokio::spawn(async move {
-        // resolve_device_key issues one individual DEVICE OBJECT_NAME read; the
-        // browse then reads objectList[0]/objectList[1] individually and batches
-        // the object's metadata (name/description/units/present_value) into a
-        // single RPM request.
+        // resolve_device_key reads OBJECT_NAME; browse batches RPM per object.
         loop {
             let received = match timeout(Duration::from_secs(2), server_rx.recv()).await {
                 Ok(Some(received)) => received,

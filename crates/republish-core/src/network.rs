@@ -123,10 +123,7 @@ mod tests {
 
     #[test]
     fn ipv4_interfaces_enumerates_host_sorted_and_filtered() {
-        // Exercises the real get_if_addrs() enumeration plus the filter/sort/dedup
-        // pipeline. The set depends on host NICs (a minimal container may yield an
-        // empty result once loopback is filtered out), but the enumeration path runs
-        // deterministically and every returned entry must satisfy the invariants.
+        // NIC enumeration + filter/sort/dedup; host-dependent, deterministic.
         let interfaces = ipv4_interfaces();
 
         // Sorted by (name, addr): no adjacent pair is out of order.

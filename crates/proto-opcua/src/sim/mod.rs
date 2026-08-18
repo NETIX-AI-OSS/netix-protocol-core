@@ -79,10 +79,7 @@ impl SimProtocol for OpcuaSimProtocol {
             );
         }
 
-        // `host` is dual-purpose in async-opcua: it is both the TCP bind address
-        // and the host advertised in endpoint URLs. The default `0.0.0.0` binds
-        // every interface but advertises an unconnectable URL to external clients
-        // (e.g. UaExpert), so allow overriding it with a reachable hostname/IP.
+        // `host` binds AND advertises endpoint URLs; 0.0.0.0 isn't reachable.
         let host = ctx
             .options
             .get("host")
@@ -134,11 +131,7 @@ impl SimProtocol for OpcuaSimProtocol {
             .get_namespace_index(&ns_uri)
             .ok_or_else(|| anyhow::anyhow!("namespace '{ns_uri}' not registered"))?;
 
-        // Build one folder per device (organized under the standard Objects
-        // folder) with a Variable node per point inside it, and seed the value
-        // cache. The folder tree mirrors what a real OPC UA server exposes, so
-        // browsing the simulator in UaExpert (or the republisher) shows devices
-        // rather than a flat list of variables.
+        // One folder per device under Objects, Variable per point; seeds cache.
         let cache: Arc<RwLock<HashMap<NodeId, DataValue>>> = Arc::new(RwLock::new(HashMap::new()));
         let mut points: Vec<PointRef> = Vec::new();
         let objects_folder: NodeId = ObjectId::ObjectsFolder.into();
@@ -226,8 +219,7 @@ impl SimProtocol for OpcuaSimProtocol {
             }
         }
 
-        // Read callbacks return the cached value (sync), decoupled from the async
-        // simulation mutex.
+        // Read callbacks return cached value (sync), off the async sim mutex.
         for point in &points {
             let cache = Arc::clone(&cache);
             let node_id = point.node_id.clone();

@@ -242,15 +242,7 @@ impl SimulatorConfig {
         let mut devices = Vec::new();
         let block = self.id_policy.per_template_block.max(1);
 
-        // BACnet object instances must be globally unique per object-type across ALL
-        // devices, not merely within a device. Every virtual device shares one BACnet/IP
-        // endpoint, so a ReadProperty for a point object carries only the object id — the
-        // target device is not recoverable from the PDU. `resolve_property_read` resolves a
-        // point to the FIRST device owning (object_type, instance); with per-device instance
-        // numbering every device's `analog_input:1` (etc.) collided and resolved to the first
-        // owner (the `-001` devices), scrambling BOTH object names and present values. A
-        // counter shared across all devices keeps each (object_type, instance) owned by
-        // exactly one device. Numbers stay small (<= total points of that object-type).
+        // Shared counter keeps (object_type, instance) unique across devices.
         let mut instance_counters: HashMap<String, u32> = HashMap::new();
 
         for (block_idx, inst) in self.instances.iter().enumerate() {
@@ -428,8 +420,7 @@ mod tests {
             line!()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        // Nested path whose parent directories do not exist yet exercises the
-        // create_dir_all parent branch.
+        // Nested path w/ missing parents exercises create_dir_all's parent arm.
         let path = dir.join("nested/deeper/config.yaml");
         SimulatorConfig::write_config(&path, &sample_config()).unwrap();
         assert!(path.is_file());
@@ -571,9 +562,7 @@ mod tests {
         );
 
         let mut device_ids = std::collections::HashSet::new();
-        // (object_type, instance) must be unique GLOBALLY across all devices, not just
-        // per-device: all virtual devices share one BACnet/IP endpoint, so a colliding
-        // (object_type, instance) would resolve every device's read to the first owner.
+        // (object_type, instance) unique globally: one shared BACnet/IP link.
         let mut global_tuples = std::collections::HashSet::new();
         for d in &devs {
             assert!(

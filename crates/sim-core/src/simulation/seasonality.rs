@@ -57,8 +57,7 @@ impl SeasonalityEngine {
     }
 
     pub fn get_outside_temp(&self, time: DateTime<Local>) -> f64 {
-        // Simple mock: temp peaks at 2 PM (14:00) at 35 °C, drops to 25 °C at 4 AM.
-        // base_temp (30) + amplitude (5) = 35 °C at peak; 30 − 5 = 25 °C at trough.
+        // Mock: temp peaks 35C at 14:00, troughs 25C at 4AM (base 30 +/- 5).
         let hour = time.hour() as f64 + (time.minute() as f64 / 60.0);
         let base_temp = 30.0;
         let amplitude = 5.0;
@@ -97,9 +96,7 @@ mod tests {
         };
         let engine = SeasonalityEngine::new(schedule);
 
-        // 04:00 is opposite of 14:00 on the cosine wave → trough (25 °C)
-        // cos((4 - 14) * π / 12) = cos(-10π/12) = cos(5π/6) = −√3/2 ≈ −0.866
-        // temp = 30 + 5 * −0.866 ≈ 25.67 °C  (not exactly 25 since trough is at 2 AM, not 4 AM)
+        // cos((4-14)*pi/12)~-0.866 -> ~25.67C (real trough is 2AM, not 4AM).
         let trough_time = Local.with_ymd_and_hms(2023, 10, 18, 2, 0, 0).unwrap();
         let trough_temp = engine.get_outside_temp(trough_time);
         assert!(

@@ -16,8 +16,7 @@ impl AppLog {
     pub fn push(&self, line: impl Into<String>) {
         let line = line.into();
         if let Ok(mut guard) = self.lines.lock() {
-            // Collapse consecutive identical lines into a single entry with a
-            // repeat count so error storms don't scroll useful history away.
+            // Collapse repeated identical lines into one entry with a count.
             if let Some((last, count)) = guard.back_mut() {
                 if *last == line {
                     *count += 1;

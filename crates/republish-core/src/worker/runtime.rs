@@ -12,10 +12,7 @@ pub fn run_async<F>(sender: Sender<WorkerEvent>, future: F) -> bool
 where
     F: std::future::Future<Output = ()>,
 {
-    // build_worker_runtime is coverage(off): its only failure arm is an unforceable OS
-    // resource fault. is_some_and folds that build-failure (None -> false) into std,
-    // keeping the tested panic-handling below measured without leaving an OS-fault-only
-    // branch in this function.
+    // build_worker_runtime coverage(off); is_some_and folds its None arm.
     build_worker_runtime(&sender).is_some_and(|runtime| {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.block_on(future))) {
             Ok(()) => true,
@@ -35,9 +32,7 @@ where
 }
 
 /// Build the multi-threaded worker runtime, logging and returning None on failure.
-// coverage(off): tokio's Builder::build() only errors on an OS thread/resource
-// exhaustion fault, which cannot be forced in a normal test. The panic-handling body
-// of run_async stays measured.
+// coverage(off): Builder::build() errors only on unforceable OS fault.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn build_worker_runtime(sender: &Sender<WorkerEvent>) -> Option<tokio::runtime::Runtime> {
     match tokio::runtime::Builder::new_multi_thread()
@@ -120,8 +115,7 @@ mod tests {
 
     #[test]
     fn run_async_reports_non_str_panic_payload() {
-        // Panicking with a String payload exercises the String branch of
-        // panic_message end-to-end.
+        // Panicking with a String payload exercises panic_message's String arm.
         let (sender, receiver) = unbounded();
         let completed = run_async(sender, async {
             std::panic::panic_any(String::from("string boom"));

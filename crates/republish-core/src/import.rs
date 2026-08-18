@@ -102,8 +102,7 @@ mod tests {
 
     #[test]
     fn merge_updates_device_key_when_relabelled() {
-        // Same identity (addressing), tag unchanged, but a new non-empty
-        // device_key -> the existing point is relabelled and counted as updated.
+        // Same identity, new device_key -> point relabelled, counted updated.
         let existing = vec![point("PLC1", 1, "PLC1/Supply")];
         let imported = vec![point("Chiller-A", 1, "PLC1/Supply")];
         let result = merge_imported_points(&existing, &imported);
@@ -115,8 +114,7 @@ mod tests {
 
     #[test]
     fn merge_ignores_blank_incoming_fields() {
-        // Imported point with same identity but blank device_key and tag_path
-        // must not clobber the existing values, and counts as no change.
+        // Blank device_key/tag_path on import must not clobber existing values.
         let existing = vec![point("PLC1", 1, "PLC1/Supply")];
         let imported = vec![point("   ", 1, "  ")];
         let result = merge_imported_points(&existing, &imported);
