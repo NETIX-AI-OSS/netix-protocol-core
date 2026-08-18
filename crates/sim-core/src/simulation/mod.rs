@@ -9,8 +9,7 @@ use crate::config::{ConfigError, SimulatorConfig};
 use models::SimulatedDevice;
 use seasonality::SeasonalityEngine;
 
-/// The protocol-agnostic simulation state: a set of devices whose point values
-/// are advanced by [`Simulation::update`] on a fixed tick.
+/// The protocol-agnostic simulation state: a set of devices whose point values are advanced by [`Simulation::update`] on a fixed tick.
 pub struct Simulation {
     pub devices: Vec<SimulatedDevice>,
     pub engine: SeasonalityEngine,
@@ -39,8 +38,7 @@ impl Simulation {
         }
     }
 
-    /// Current value of a point, in the neutral representation adapters consume.
-    /// Looks the point up by raw object-type string + instance within a device.
+    /// Current value of a point, in the neutral representation adapters consume, looked up by raw object-type string + instance within a device.
     pub fn neutral_value(
         &self,
         device_id: u32,

@@ -1,31 +1,12 @@
-//! Protocol-neutral types shared by the generic simulator (`sim-core`) and
-//! republisher (`republish-core`) cores and by every protocol adapter
-//! (`proto-bacnet`, `proto-modbus`, `proto-opcua`, …).
-//!
-//! The cores never name a concrete protocol; they speak in terms of the neutral
-//! [`PointKind`] / [`PointValue`] value model and an opaque [`Addressing`] map.
-//! Each protocol adapter declares its [`Capabilities`] so the user interface can
-//! render the right controls without hard-coding protocol knowledge.
+//! Protocol-neutral types shared by the generic sim/republisher cores and every protocol adapter, keyed on the [`PointKind`]/[`PointValue`] model and [`Capabilities`].
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// A protocol-native address for a single point, carried opaquely by the cores
-/// and interpreted only by the owning adapter.
-///
-/// Examples: `{"register": 40001, "datatype": "f32"}` (Modbus),
-/// `{"node_id": "ns=2;s=AHU-1.SupplyTemp"}` (OPC UA),
-/// `{"object_type": "analog_input", "object_instance": 1, "property": "present_value"}` (BACnet).
+/// A protocol-native address for a single point, carried opaquely by the cores and interpreted only by the owning adapter.
 pub type Addressing = BTreeMap<String, serde_json::Value>;
 
-/// Strip the `-NNN` instance suffix a device name carries (`"ahu-12-001"` ->
-/// `"ahu-12"`), so a `count == 1` instance maps back to its `name_prefix`.
-///
-/// Shared by the simulator's republisher-config emit (`sim-core`) and BACnet
-/// discovery (`proto-bacnet`) so both derive the identical device key from a
-/// device's `OBJECT_NAME`. The historian tag name is `{device_key}-{tag_path}`,
-/// so emit and discovery MUST apply this rule identically or seeded demo tags
-/// won't match discovered ones.
+/// Strips a device name's `-NNN` instance suffix; sim-core emit and BACnet discovery must apply this identically or seeded demo tags won't match discovered ones.
 pub fn base_key(name: &str) -> &str {
     if let Some(idx) = name.rfind('-') {
         let suffix = &name[idx + 1..];
@@ -36,9 +17,7 @@ pub fn base_key(name: &str) -> &str {
     name
 }
 
-/// The neutral category of a simulated/published point. Adapters map this to and
-/// from their protocol-native notion (BACnet object type, Modbus table, OPC UA
-/// data type, …).
+/// The neutral category of a simulated/published point; adapters map this to their protocol-native notion (object type, table, data type, …).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PointKind {
@@ -52,8 +31,7 @@ pub enum PointKind {
     Text,
 }
 
-/// A neutral point value. Replaces protocol-specific value types (e.g.
-/// `bacnet_rs::property::PropertyValue`) at the core boundary.
+/// A neutral point value, replacing protocol-specific value types at the core boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PointValue {
     Float(f64),
@@ -98,8 +76,7 @@ impl PointValue {
     }
 }
 
-/// How a protocol finds devices/servers to publish from. Drives which discovery
-/// controls the republisher UI shows.
+/// How a protocol finds devices/servers to publish from; drives which discovery controls the republisher UI shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscoveryKind {
     /// Broadcast announcement (BACnet Who-Is/I-Am).
@@ -137,8 +114,7 @@ pub enum FieldKind {
     Secret,
 }
 
-/// One protocol-specific configuration field, rendered dynamically by the UI so
-/// adding a protocol never requires touching the GUI/TUI code.
+/// One protocol-specific configuration field, rendered dynamically so adding a protocol never requires touching the GUI/TUI code.
 #[derive(Debug, Clone)]
 pub struct FieldSpec {
     /// Stable key used in the [`Addressing`]/connection map.
@@ -209,9 +185,7 @@ impl FieldSpec {
     }
 }
 
-/// Declarative description of what a protocol adapter can do. The republisher UI
-/// reads this to decide which discovery/browse controls and which connection and
-/// per-point fields to render.
+/// Declarative description of what a protocol adapter can do, read by the republisher UI to decide which controls and fields to render.
 #[derive(Debug, Clone)]
 pub struct Capabilities {
     /// Stable id used in config (`protocol = "modbus"`).

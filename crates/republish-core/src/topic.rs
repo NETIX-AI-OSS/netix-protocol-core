@@ -29,20 +29,13 @@ pub fn telemetry_topic(config: &MqttConfig, point: &PointConfig) -> String {
     join_topic(&[&normalize_prefix(&config.topic_prefix), &tag_path])
 }
 
-/// Topic for a `netix_envelope` device publish: `<device_topic_prefix>/<id>/telemetry`.
-///
-/// Unlike [`telemetry_topic`], the configured prefix is preserved verbatim
-/// (only its trailing slash trimmed) so a leading slash survives — a publish to
-/// `/Netix/Sim/Device/<id>/telemetry` must match a subscription on
-/// `/Netix/Sim/Device/#`, which a leading-slash-stripped topic would not. Only
-/// the `id` segment is sanitised.
+/// Topic for a `netix_envelope` device publish; unlike [`telemetry_topic`] the prefix is preserved verbatim (only trailing slash trimmed) so a leading slash survives for subscription matching.
 pub fn device_envelope_topic(config: &MqttConfig, id: &str) -> String {
     let prefix = config.device_topic_prefix.trim_end().trim_end_matches('/');
     format!("{}/{}/telemetry", prefix, sanitize_segment(id))
 }
 
-/// Default tag path when a point has no explicit `tag_path`: the device key
-/// followed by a slug of the addressing values.
+/// Default tag path when a point has no explicit `tag_path`: the device key followed by a slug of the addressing values.
 pub fn default_tag_path(point: &PointConfig) -> String {
     let device = if point.device_key.trim().is_empty() {
         "device".to_string()

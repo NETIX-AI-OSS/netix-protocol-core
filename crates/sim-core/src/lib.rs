@@ -1,6 +1,4 @@
-//! Protocol-agnostic core of the generic simulator: the simulation engine,
-//! config model, TUI, and app lifecycle. Concrete protocols plug in through the
-//! [`SimProtocol`] trait and are resolved at runtime via a [`SimRegistry`].
+//! Protocol-agnostic core of the generic simulator; concrete protocols plug in through [`SimProtocol`] and are resolved at runtime via [`SimRegistry`].
 
 pub mod app;
 pub mod config;

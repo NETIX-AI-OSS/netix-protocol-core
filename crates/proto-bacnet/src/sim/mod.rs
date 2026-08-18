@@ -1,5 +1,4 @@
-//! BACnet/IP simulator adapter: serves the shared simulation over UDP/47808,
-//! answering Who-Is, ReadProperty, and ReadPropertyMultiple.
+//! BACnet/IP simulator adapter: serves the shared simulation over UDP/47808, answering Who-Is, ReadProperty, and ReadPropertyMultiple.
 
 mod apdu;
 mod properties;
@@ -25,8 +24,7 @@ use registry::DeviceEntry;
 /// BACnet vendor identifier assigned to this simulator.
 pub const VENDOR_ID: u32 = 260;
 
-/// Maximum APDU length advertised in I-Am and device property responses.
-/// BACnet/IP single-segment ceiling (1476 bytes = 1500 MTU − 14 Ethernet − 20 IP − 8 UDP − BVLC/NPDU overhead).
+/// Maximum APDU length advertised in I-Am/device responses: the BACnet/IP single-segment ceiling (1500 MTU minus Ethernet/IP/UDP/BVLC-NPDU overhead).
 pub const MAX_APDU_LENGTH: u32 = 1476;
 
 /// Simulator-side BACnet adapter.

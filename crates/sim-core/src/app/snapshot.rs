@@ -25,8 +25,7 @@ pub struct PointRow {
 pub struct AppSnapshot {
     pub building_name: String,
     pub config_path: String,
-    /// Human-readable summary of the protocols being served, e.g.
-    /// `"bacnet :47808, modbus :502"`.
+    /// Human-readable summary of the protocols being served, e.g. `"bacnet :47808, modbus :502"`.
     pub protocol_label: String,
     pub uptime_secs: u64,
     pub device_count: usize,

@@ -27,9 +27,7 @@ impl PropertyRead {
     }
 }
 
-/// Convert a neutral simulation value to its BACnet property representation. The
-/// simulation engine only produces Float/Bool/UInt; Int/Text are mapped
-/// best-effort for completeness.
+/// Converts a neutral simulation value to its BACnet property representation; the engine only produces Float/Bool/UInt, Int/Text are mapped best-effort.
 fn neutral_to_property(value: NeutralValue) -> PropertyValue {
     match value {
         NeutralValue::Float(v) => PropertyValue::Real(v as f32),
@@ -40,13 +38,7 @@ fn neutral_to_property(value: NeutralValue) -> PropertyValue {
     }
 }
 
-/// Encode a point's `present_value`. BACnet models the present-value of a
-/// Binary object as `BACnetBinaryPV` — an *Enumerated* (0 = inactive,
-/// 1 = active) — not an Application Boolean. Encoding it as Enumerated is both
-/// spec-correct and keeps polling clients happy: a republisher reading a raw
-/// Application Boolean would surface the value as the text `"true"`/`"false"`,
-/// whereas an Enumerated reads back as numeric `0`/`1`. Non-binary objects keep
-/// their natural representation.
+/// Encodes a point's `present_value`: BACnet models a Binary object's as an Enumerated (0/1), not an Application Boolean, so polling clients read numeric not `"true"`/`"false"`.
 fn present_value_property(object_type: ObjectType, value: NeutralValue) -> PropertyValue {
     if let NeutralValue::Bool(state) = value {
         if matches!(

@@ -54,10 +54,7 @@ pub fn detect_run_mode(no_tui_flag: bool) -> RunMode {
     }
 }
 
-/// Returns true when headless mode is requested via environment variable.
-///
-/// Accepts both the generic `SIM_NO_TUI` and the legacy BACnet name
-/// `BACNET_SIM_NO_TUI` for backward compatibility with existing scripts.
+/// Returns true when headless mode is requested via `SIM_NO_TUI` or the legacy `BACNET_SIM_NO_TUI` alias.
 fn env_no_tui() -> bool {
     ["SIM_NO_TUI", "BACNET_SIM_NO_TUI"].into_iter().any(|name| {
         std::env::var(name)
@@ -71,8 +68,7 @@ fn env_no_tui() -> bool {
 pub struct CliArgs {
     pub no_tui: bool,
     pub config_path: PathBuf,
-    /// When set (`--emit-republisher-config PATH`), write a matching
-    /// republisher `config.toml` to this path and exit without serving.
+    /// When set (`--emit-republisher-config PATH`), write a matching republisher `config.toml` to this path and exit without serving.
     pub emit_republisher_config: Option<PathBuf>,
 }
 
@@ -121,13 +117,7 @@ pub fn parse_args() -> CliArgs {
 /// Filename looked up when the user supplies no explicit config path.
 const DEFAULT_CONFIG_NAME: &str = "config.yaml";
 
-/// Resolve the default config location when none was given on the command line
-/// or via `CONFIG_PATH`. Prefers `config.yaml` in the current working directory,
-/// then one sitting next to the executable, so a config dropped beside
-/// `simulator(.exe)` is picked up even when the process is launched from a
-/// different working directory (e.g. double-clicked on Windows). When neither
-/// exists it returns the working-directory path, which `ensure_config_file`
-/// then seeds with the bundled sample (preserving the previous behaviour).
+/// Resolves the default config location: `config.yaml` in the cwd, else beside the executable, else the cwd path for `ensure_config_file` to seed.
 fn default_config_path() -> PathBuf {
     let mut candidates = vec![PathBuf::from(DEFAULT_CONFIG_NAME)];
     if let Some(dir) = std::env::current_exe()
@@ -141,9 +131,7 @@ fn default_config_path() -> PathBuf {
     pick_config_path(&candidates, |p| p.exists())
 }
 
-/// Return the first candidate for which `exists` reports true, else the first
-/// candidate. Split out from [`default_config_path`] so the selection logic is
-/// unit-testable without touching the filesystem.
+/// Returns the first candidate for which `exists` reports true, else the first candidate; split out so this logic is unit-testable without touching the filesystem.
 fn pick_config_path(candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> PathBuf {
     candidates
         .iter()
@@ -163,9 +151,7 @@ fn print_help() {
     );
 }
 
-/// Start the simulation tick loop and every configured protocol listener, then
-/// run the TUI (or block headless). `registry` carries the protocol adapters
-/// compiled into the binary.
+/// Starts the simulation tick loop and every configured protocol listener, then runs the TUI (or blocks headless).
 pub fn run(
     mode: RunMode,
     config_path: PathBuf,
@@ -306,8 +292,7 @@ pub fn restart_process() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Ensure a config file exists (writing the bundled sample if missing) and load
-/// it. Returns the parsed config or a [`ConfigError`] for the binary to report.
+/// Ensures a config file exists (writing the bundled sample if missing) and loads it.
 pub fn bootstrap_config(config_path: &Path) -> Result<SimulatorConfig, ConfigError> {
     if SimulatorConfig::ensure_config_file(config_path)? {
         warn!(

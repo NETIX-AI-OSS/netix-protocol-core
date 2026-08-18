@@ -1,5 +1,4 @@
-//! Loopback: the BACnet republish adapter discovers, browses, and polls the
-//! BACnet simulator adapter and decodes live values end-to-end.
+//! Loopback: the BACnet republish adapter discovers, browses, and polls the BACnet simulator adapter and decodes live values end-to-end.
 #![cfg(all(feature = "sim", feature = "republish"))]
 
 use std::collections::HashMap;
@@ -19,13 +18,10 @@ use tokio_util::sync::CancellationToken;
 use republish_core::model::PointConfig;
 use republish_core::RepublishRegistry;
 
-/// Device instance assigned by [`SimulatorConfig`] with `device_id_base: 1000`,
-/// one template block, and a single instance (`1100 + 0`).
+/// Device instance assigned by [`SimulatorConfig`] with `device_id_base: 1000`, one template block, and a single instance (`1100 + 0`).
 const DEVICE_INSTANCE: u32 = 1100;
 
-/// Both tests bind a simulator on the BACnet default UDP port (47808), so they
-/// must not run concurrently. This serial guard holds each test to sole use of
-/// the port; poisoning is ignored so one test's panic doesn't cascade.
+/// Both tests bind the BACnet default UDP port (47808), so this serial guard holds each to sole use of it; poisoning is ignored so one panic doesn't cascade.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -174,12 +170,7 @@ async fn republisher_discovers_browses_and_polls_simulator_over_bacnet() {
     let _ = serve.await;
 }
 
-/// `discover_on_start`'s runtime half: [`republish_core::worker::discover_points`]
-/// discovers the simulator, browses it, and builds an in-memory point set with no
-/// hand-authored config. Asserts the built points are identity-faithful (device
-/// key from OBJECT_NAME, tag path = the clean role — never the `device_<instance>`
-/// concatenation the RCA flagged) and that they poll to live values, i.e. they are
-/// exactly what the worker would hand to the publish path.
+/// `discover_on_start`'s runtime half: [`republish_core::worker::discover_points`] builds an in-memory, identity-faithful point set with no hand-authored config, and polls to live values.
 #[tokio::test]
 async fn discover_on_start_builds_identity_faithful_points_and_polls() {
     let _serial = serial_guard();

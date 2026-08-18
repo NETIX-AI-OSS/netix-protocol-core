@@ -1,6 +1,4 @@
-//! OPC UA simulator adapter: exposes the shared simulation as an OPC UA server
-//! address space (one Variable node per simulated point), with live values fed
-//! through a value cache refreshed once per second from the simulation.
+//! OPC UA simulator adapter: exposes the shared simulation as an address space (one Variable node per point) backed by a cache refreshed once per second.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -21,12 +19,7 @@ use sim_core::{SimProtocol, SimServeContext};
 
 const DEFAULT_NAMESPACE: &str = "urn:netix:simulator";
 
-/// The server's *application* URI. This MUST differ from the node namespace
-/// (below): async-opcua's built-in diagnostics node manager registers the
-/// application URI as a namespace and owns it, so if the simulation's nodes
-/// shared that namespace index every value read would be routed to diagnostics
-/// and answered with `BadNodeIdUnknown` (browse still works via cross-manager
-/// reference resolution, which is why the collision is easy to miss).
+/// The server's *application* URI; MUST differ from the node namespace or reads collide with async-opcua's diagnostics node manager (`BadNodeIdUnknown`, browse still works, masking it).
 const APPLICATION_URI: &str = "urn:netix:netix-protocol-tools:simulator";
 
 /// Identifies a simulated point so the updater can fetch its live value.

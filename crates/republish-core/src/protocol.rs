@@ -1,10 +1,4 @@
-//! The republisher-side protocol extension point.
-//!
-//! A protocol adapter implements [`RepublishProtocol`] to discover devices,
-//! browse their points, and poll values. The core's worker drives these methods
-//! and publishes the results to MQTT. Adapters are resolved by id from a
-//! [`RepublishRegistry`] the binary populates with whichever protocols are
-//! compiled in.
+//! The republisher-side protocol extension point: adapters implement [`RepublishProtocol`] (discover/browse/poll), driven by the worker and resolved via [`RepublishRegistry`].
 
 use std::collections::HashMap;
 
@@ -16,8 +10,7 @@ use crate::model::{
 
 #[async_trait::async_trait]
 pub trait RepublishProtocol: Send + Sync {
-    /// Declarative capabilities (discovery/browse style + connection/addressing
-    /// fields) the UI renders without protocol knowledge.
+    /// Declarative capabilities (discovery/browse style + connection/addressing fields) the UI renders without protocol knowledge.
     fn capabilities(&self) -> &Capabilities;
 
     /// Find devices/servers reachable with the given connection settings.
@@ -92,8 +85,7 @@ mod tests {
     use super::*;
     use proto_api::{BrowseKind, DiscoveryKind};
 
-    /// Minimal in-test adapter. Its `capabilities().id` doubles as an identity
-    /// marker so tests can assert which factory produced a given instance.
+    /// Minimal in-test adapter; its `capabilities().id` doubles as an identity marker for tests.
     struct FakeProtocol {
         caps: Capabilities,
     }

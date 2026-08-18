@@ -28,8 +28,7 @@ pub trait MqttPublisher {
         retain: bool,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 
-    /// Running total of transport reconnects observed by the publisher. Default 0
-    /// for publishers that do not maintain a broker link (fakes/tests).
+    /// Running total of transport reconnects observed by the publisher; default 0 for fakes/tests without a broker link.
     fn reconnect_count(&self) -> usize {
         0
     }
@@ -44,8 +43,7 @@ pub trait MqttPublisher {
         None
     }
 
-    /// A fatal, non-self-healing connection rejection (bad auth/not authorized),
-    /// if the broker has rejected the link. Default `None`.
+    /// A fatal, non-self-healing connection rejection (bad auth/not authorized), if the broker has rejected the link.
     fn connection_fatal_error(&self) -> Option<String> {
         None
     }
@@ -107,18 +105,13 @@ struct ConnectionState {
     reconnects: AtomicUsize,
     /// Running total of broker-confirmed QoS 1 deliveries (PubAcks).
     acked: AtomicUsize,
-    /// Sticky flag set when the broker *rejects* the connection with a non-Success
-    /// CONNACK return code (bad username/password, not authorized, …). Unlike a
-    /// transport drop this will not self-heal on retry, so it is surfaced as a
-    /// fatal connection error rather than counted as a reconnect.
+    /// Sticky flag set on a non-Success CONNACK; unlike a transport drop this won't self-heal on retry, so it's surfaced as fatal rather than counted as a reconnect.
     fatal: AtomicBool,
     last_error: Mutex<Option<String>>,
 }
 
 impl ConnectionState {
-    /// Handle a broker CONNACK. A `Success` code means the link is live; any other
-    /// code is a fatal auth/config rejection — the connection is NOT counted as up
-    /// (see [`ConnectionState::record_fatal`]).
+    /// Handles a broker CONNACK: `Success` means the link is live, any other code is a fatal rejection (see [`ConnectionState::record_fatal`]).
     fn record_connack(&self, code: ConnectReturnCode) {
         if code == ConnectReturnCode::Success {
             self.connected.store(true, Ordering::Relaxed);
@@ -131,9 +124,7 @@ impl ConnectionState {
         }
     }
 
-    /// Record a fatal, non-self-healing connection error (broker rejected the
-    /// connection). Marks the link down and sets the sticky `fatal` flag so the
-    /// error is surfaced to the operator instead of being silently retried.
+    /// Records a fatal connection rejection: marks the link down and sets the sticky `fatal` flag instead of silently retrying.
     fn record_fatal(&self, error: impl Into<String>) {
         self.connected.store(false, Ordering::Relaxed);
         self.fatal.store(true, Ordering::Relaxed);
@@ -182,10 +173,7 @@ fn connack_error_message(code: ConnectReturnCode) -> String {
     )
 }
 
-/// Apply one polled event-loop result to the shared connection state. This is the
-/// per-iteration body of the spawned poll loop, factored out so the packet-handling
-/// arms are unit-testable without a live broker. Returns `Some(delay)` when the poll
-/// errored and the caller must back off before polling again; `None` otherwise.
+/// Applies one polled event-loop result to the shared connection state; returns `Some(delay)` when the caller must back off, `None` otherwise.
 fn apply_poll(
     state: &ConnectionState,
     backoff: &mut ReconnectBackoff,
@@ -255,8 +243,7 @@ impl RumqttPublisher {
         })
     }
 
-    /// Hand a publish to the event loop without blocking. Fails fast when the
-    /// outbound channel is full (broker down long enough to back up the queue).
+    /// Hands a publish to the event loop without blocking; fails fast when the outbound channel is full.
     fn enqueue(&self, topic: &str, payload: Vec<u8>, retain: bool) -> Result<()> {
         self.client
             .try_publish(topic, QoS::AtLeastOnce, retain, payload)
@@ -292,8 +279,7 @@ impl RumqttPublisher {
         self.state.reconnects.load(Ordering::Relaxed)
     }
 
-    /// Running total of broker-confirmed QoS 1 deliveries (PubAcks). The honest
-    /// "delivered" counter — distinct from local enqueue attempts.
+    /// Running total of broker-confirmed QoS 1 deliveries (PubAcks); the honest "delivered" counter, distinct from local enqueue attempts.
     pub fn acked_count(&self) -> usize {
         self.state.acked.load(Ordering::Relaxed)
     }
@@ -306,9 +292,7 @@ impl RumqttPublisher {
             .and_then(|value| value.clone())
     }
 
-    /// A human message when the broker has *rejected* the connection (bad auth,
-    /// not authorized, …) — a fatal, non-self-healing error worth surfacing to the
-    /// operator. `None` while the connection is healthy or only transiently down.
+    /// A human message when the broker has rejected the connection (fatal, non-self-healing); `None` while healthy or only transiently down.
     pub fn connection_fatal_error(&self) -> Option<String> {
         if self.state.fatal.load(Ordering::Relaxed) {
             self.last_connection_error()

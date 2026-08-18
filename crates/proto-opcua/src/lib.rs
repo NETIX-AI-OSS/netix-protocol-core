@@ -1,22 +1,11 @@
-//! OPC UA protocol adapter for the generic simulator and republisher.
-//!
-//! Uses the `async-opcua` crate (MPL-2.0; confined to this crate, recorded in the
-//! workspace NOTICE).
-//!
-//! - With the `sim` feature it provides [`register_sim`], an OPC UA server that
-//!   exposes a `sim-core` simulation as an address space of Variable nodes.
-//! - With the `republish` feature it provides [`register_republish`], the OPC UA
-//!   client used by the republisher: it discovers endpoints, walks the address
-//!   space recursively, and reads node values.
+//! OPC UA protocol adapter for the generic simulator and republisher; uses the `async-opcua` crate (MPL-2.0, confined to this crate, recorded in the workspace NOTICE).
 
 use proto_api::{BrowseKind, Capabilities, DiscoveryKind, FieldSpec};
 
-/// Registry id used in simulator config (`protocol = "opcua"`) and the
-/// republisher protocol picker.
+/// Registry id used in simulator config (`protocol = "opcua"`) and the republisher protocol picker.
 pub const ID: &str = "opcua";
 
-/// The protocol's declarative capabilities. OPC UA discovers servers/endpoints by
-/// querying an endpoint URL and browses the server's address space.
+/// The protocol's declarative capabilities; OPC UA discovers servers/endpoints by querying an endpoint URL and browses the server's address space.
 pub fn capabilities() -> Capabilities {
     Capabilities {
         id: "opcua",

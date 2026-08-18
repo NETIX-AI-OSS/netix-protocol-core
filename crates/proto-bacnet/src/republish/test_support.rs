@@ -1,8 +1,4 @@
-//! Test-facing helpers for BACnet loopback integration tests.
-//!
-//! These mirror the public API surface of the original `bacnet-republisher`
-//! crate so integration tests can exercise discovery, browse, and poll paths
-//! without going through the full GUI/worker stack.
+//! Test-facing helpers for BACnet loopback integration tests, letting them exercise discovery/browse/poll paths without the full GUI/worker stack.
 
 use std::sync::atomic::AtomicBool;
 
@@ -141,10 +137,7 @@ pub async fn scan_device_objects_with_client(
     Ok(objects)
 }
 
-/// Resolve the identity-faithful device key for `device_instance` by reading the
-/// device object's `OBJECT_NAME` (the real discovery path). Returns e.g.
-/// `"ahu-12"` for a device named `"ahu-12-001"`, or `"device_{instance}"` when
-/// no usable name is served.
+/// Resolves the identity-faithful device key for `device_instance` by reading `OBJECT_NAME` via the real discovery path, e.g. `"ahu-12"` for `"ahu-12-001"`.
 pub async fn resolve_device_key_with_client(
     client: &BacnetIpClient,
     device_instance: u32,
@@ -152,8 +145,7 @@ pub async fn resolve_device_key_with_client(
     resolve_device_key(client, device_instance).await
 }
 
-/// Browse a device via the real discovery path, returning the `DiscoveredPoint`s
-/// (with their `suggested_tag_path` derived from DESCRIPTION/OBJECT_NAME).
+/// Browses a device via the real discovery path, returning `DiscoveredPoint`s with `suggested_tag_path` derived from DESCRIPTION/OBJECT_NAME.
 pub async fn browse_device_points_with_client(
     client: &BacnetIpClient,
     device_instance: u32,

@@ -1,14 +1,4 @@
-//! Projection of the protocol-agnostic simulation into Modbus address space.
-//!
-//! Points are laid out deterministically in device/point order:
-//! - **Analog** points → one 32-bit IEEE-754 float across two consecutive
-//!   registers (big-endian / high word first).
-//! - **Multi-state** points → one 16-bit register.
-//! - **Binary** points → one bit.
-//!
-//! Holding and input registers are mirrored (both answer from the same register
-//! cells); coils and discrete inputs are likewise mirrored. This keeps the
-//! simulator usable by clients that poll either table.
+//! Projection of the protocol-agnostic simulation into Modbus address space, laid out deterministically (analog = 2 registers, multi-state = 1, binary = 1 bit) with holding/input and coil/discrete mirrored.
 
 use proto_api::PointKind;
 use sim_core::simulation::models::SimulatedDevice;
@@ -36,8 +26,7 @@ struct BitCell {
     instance: u32,
 }
 
-/// A read-only Modbus image of the simulation. Values are computed live on each
-/// read from the current simulation state.
+/// A read-only Modbus image of the simulation; values are computed live on each read from the current simulation state.
 #[derive(Debug)]
 pub struct ModbusMap {
     regs: Vec<RegCell>,

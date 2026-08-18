@@ -1,14 +1,4 @@
-//! Protocol-agnostic core of the generic republisher: MQTT/TLS publishing, the
-//! configuration model, the background worker, and (behind the `gui` feature)
-//! the capability-driven iced GUI. Concrete protocols plug in through the
-//! [`RepublishProtocol`] trait and are resolved at runtime via a
-//! [`RepublishRegistry`].
-//!
-//! Coverage note: under `cargo +nightly llvm-cov` (which sets `cfg(coverage_nightly)`)
-//! the `coverage_attribute` feature is enabled so that `#[cfg_attr(coverage_nightly,
-//! coverage(off))]` can exclude test modules and genuinely-unreachable defensive
-//! branches (OS-fault error arms) from the production-coverage figure. The attribute
-//! is inert on stable, so normal builds and CI are unaffected.
+//! Protocol-agnostic core of the generic republisher (MQTT/TLS publishing, config model, worker, and the `gui`-feature iced GUI); protocols plug in via [`RepublishProtocol`]/[`RepublishRegistry`].
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 #[cfg(feature = "gui")]

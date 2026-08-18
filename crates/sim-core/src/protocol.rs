@@ -1,13 +1,4 @@
-//! The simulator-side protocol extension point.
-//!
-//! A protocol adapter (e.g. `proto-bacnet`, `proto-modbus`, `proto-opcua`)
-//! implements [`SimProtocol`] to expose the shared, protocol-agnostic
-//! [`Simulation`](crate::simulation::Simulation) on the wire. The core owns the
-//! simulation and its tick loop; the adapter only reads live values and answers
-//! protocol requests.
-//!
-//! Adapters are looked up by id in a [`SimRegistry`], which the binary
-//! populates with whichever protocols are compiled in.
+//! The simulator-side protocol extension point: adapters implement [`SimProtocol`] to expose the shared [`Simulation`](crate::simulation::Simulation) and are looked up by id in a [`SimRegistry`].
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,8 +16,7 @@ pub struct SimServeContext {
     pub sim: Arc<Mutex<Simulation>>,
     /// Request/error counters surfaced in the TUI.
     pub metrics: Arc<AppMetrics>,
-    /// In-memory log buffer shown in the TUI (None in headless mode — use the
-    /// `log` crate facade there).
+    /// In-memory log buffer shown in the TUI (None in headless mode — use the `log` crate facade there).
     pub log: Option<Arc<AppLog>>,
     /// Port to bind (already resolved from config or the adapter default).
     pub port: u16,
@@ -60,8 +50,7 @@ pub trait SimProtocol: Send + Sync {
 /// Constructs an adapter instance from its config options.
 pub type SimFactory = fn(&Addressing) -> anyhow::Result<Box<dyn SimProtocol>>;
 
-/// Maps protocol id → adapter factory. The binary registers every compiled-in
-/// protocol here; the core resolves the configured protocols against it.
+/// Maps protocol id to adapter factory; the binary registers every compiled-in protocol here.
 #[derive(Default)]
 pub struct SimRegistry {
     factories: HashMap<String, SimFactory>,

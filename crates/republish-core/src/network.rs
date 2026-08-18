@@ -1,5 +1,4 @@
-//! IPv4 interface enumeration, used by adapters that bind to a local NIC and by
-//! the UI's interface picker.
+//! IPv4 interface enumeration, used by adapters that bind to a local NIC and by the UI's interface picker.
 
 use get_if_addrs::{get_if_addrs, IfAddr};
 use std::fmt;
@@ -17,8 +16,7 @@ impl fmt::Display for NetworkInterface {
     }
 }
 
-/// Whether an interface is a plausible target for protocol discovery binding
-/// (excludes loopback, link-local, and common tunnel/virtual NICs).
+/// Whether an interface is a plausible target for protocol discovery binding (excludes loopback, link-local, and common tunnel/virtual NICs).
 pub fn is_discovery_interface(name: &str, addr: Ipv4Addr) -> bool {
     if addr.is_loopback() || addr.is_unspecified() || addr.is_link_local() {
         return false;

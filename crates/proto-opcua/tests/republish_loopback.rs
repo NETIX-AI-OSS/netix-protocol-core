@@ -1,10 +1,4 @@
-//! Loopback: the OPC UA republish adapter connects to the OPC UA simulator
-//! adapter, browses its address space, and reads live values end-to-end.
-//!
-//! Mirrors the Modbus loopback (a real TCP server/client in-process). Value reads
-//! work against the bundled simulator: the server gives the simulation's nodes a
-//! namespace distinct from the application URI, so reads route to the simulator's
-//! node manager rather than the built-in diagnostics manager.
+//! Loopback: the OPC UA republish adapter connects to the OPC UA simulator adapter (real TCP, in-process) and reads live values end-to-end.
 #![cfg(all(feature = "sim", feature = "republish"))]
 
 use std::collections::HashMap;

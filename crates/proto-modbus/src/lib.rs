@@ -1,15 +1,8 @@
 //! Modbus TCP protocol adapter for the generic simulator and republisher.
-//!
-//! - With the `sim` feature it provides [`register_sim`], a read-only Modbus TCP
-//!   server that exposes a `sim-core` simulation as holding/input registers and
-//!   coils/discrete inputs.
-//! - With the `republish` feature it provides the Modbus TCP client used by the
-//!   republisher for discovery, browse, and polling.
 
 use proto_api::{BrowseKind, Capabilities, DiscoveryKind, FieldSpec};
 
-/// Registry id used in simulator config (`protocol = "modbus"`) and the
-/// republisher protocol picker.
+/// Registry id used in simulator config (`protocol = "modbus"`) and the republisher protocol picker.
 pub const ID: &str = "modbus";
 
 /// Modbus register tables a republished point can live in.
@@ -18,9 +11,7 @@ pub const TABLES: &[&str] = &["holding", "input", "coil", "discrete"];
 /// Per-point data types the republisher can decode from registers.
 pub const DATATYPES: &[&str] = &["u16", "i16", "u32", "i32", "f32"];
 
-/// The protocol's declarative capabilities. Modbus TCP has no native discovery,
-/// so the republisher uses a subnet sweep (falling back to manual entry) and a
-/// register scan to browse.
+/// The protocol's declarative capabilities; Modbus TCP has no native discovery, so the republisher uses a subnet sweep and a register scan to browse.
 pub fn capabilities() -> Capabilities {
     Capabilities {
         id: "modbus",
