@@ -1,7 +1,4 @@
-//! BACnet-flavoured device/point index built from the protocol-agnostic
-//! simulation. This is where the neutral `object_type` strings and `units`
-//! strings carried by `sim-core` are mapped to BACnet `ObjectType` enums and the
-//! ASHRAE engineering-units enumeration.
+//! BACnet-flavoured device/point index built from the protocol-agnostic simulation, mapping neutral `object_type`/`units` strings to BACnet enums.
 
 use bacnet_rs::object::ObjectType;
 use sim_core::simulation::models::SimulatedDevice;
@@ -9,8 +6,7 @@ use sim_core::simulation::models::SimulatedDevice;
 #[derive(Debug, Clone)]
 pub struct PointEntry {
     pub object_type: ObjectType,
-    /// Raw object-type string (e.g. `"analog_input"`) used to look the live
-    /// value up in the simulation.
+    /// Raw object-type string (e.g. `"analog_input"`) used to look the live value up in the simulation.
     pub object_type_str: String,
     pub instance: u32,
     pub label: String,

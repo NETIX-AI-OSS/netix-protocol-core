@@ -1,5 +1,4 @@
-//! BACnet/IP republisher adapter: Who-Is discovery, object-list browse, and
-//! ReadProperty(Multiple) polling, mapped onto the generic republisher trait.
+//! BACnet/IP republisher adapter: Who-Is discovery, object-list browse, and ReadProperty(Multiple) polling, mapped onto the generic republisher trait.
 
 mod refresh;
 pub mod value;
@@ -258,16 +257,12 @@ fn instance_from_key(key: &str) -> Option<u32> {
     key.strip_prefix("device_").and_then(|n| n.parse().ok())
 }
 
-/// Resolve the device instance a browse/refresh request targets: prefer the
-/// numeric instance carried on the discovered device (identity-faithful keys no
-/// longer encode it), and fall back to parsing a legacy `device_{instance}` key.
+/// Resolves the device instance a browse/refresh request targets: prefers the numeric instance on the discovered device, falling back to a legacy `device_{instance}` key.
 fn resolve_device_instance(device: &DiscoveredDevice) -> Option<u32> {
     device.instance.or_else(|| instance_from_key(&device.key))
 }
 
-/// Read the Device object's `OBJECT_NAME` and derive the identity-faithful key
-/// via [`proto_api::base_key`] (matching the simulator's emitted config). Falls
-/// back to `device_{instance}` when the name is unavailable or empty.
+/// Reads the Device object's `OBJECT_NAME` and derives the identity-faithful key via [`proto_api::base_key`]; falls back to `device_{instance}` when unavailable.
 async fn resolve_device_key(client: &BacnetIpClient, instance: u32) -> String {
     let Ok(device_oid) = ObjectIdentifier::new(ObjectType::DEVICE, instance) else {
         return device_key(instance);

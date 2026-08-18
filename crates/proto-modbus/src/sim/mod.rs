@@ -1,5 +1,4 @@
-//! Modbus TCP simulator adapter: serves the shared simulation as a read-only
-//! Modbus image (holding/input registers + coils/discrete inputs).
+//! Modbus TCP simulator adapter: serves the shared simulation as a read-only Modbus image (holding/input registers + coils/discrete inputs).
 
 mod map;
 

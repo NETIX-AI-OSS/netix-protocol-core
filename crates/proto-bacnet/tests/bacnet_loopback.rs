@@ -1,7 +1,4 @@
-//! In-process BACnet/IP loopback tests for the republish adapter.
-//!
-//! Ports the four integration tests from the original `bacnet-republisher`
-//! crate: I-Am discovery, object scan, RPM poll, and RPM-timeout fallback.
+//! In-process BACnet/IP loopback tests for the republish adapter: I-Am discovery, object scan, RPM poll, and RPM-timeout fallback.
 
 use bacnet_client::client::BACnetClient;
 use bacnet_encoding::apdu::{

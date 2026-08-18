@@ -1,5 +1,4 @@
-//! Merge browsed/discovered points into the configured point list, keyed by
-//! [`PointIdentity`] (device key + addressing).
+//! Merges browsed/discovered points into the configured point list, keyed by [`PointIdentity`] (device key + addressing).
 
 use std::collections::HashMap;
 

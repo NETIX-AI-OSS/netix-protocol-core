@@ -1,18 +1,8 @@
-//! Provenance checksum for an emitted republisher config.
-//!
-//! The simulator emits `config.toml` from its own simulator config (BACnet
-//! addresses, points, …). If that simulator config later changes but the
-//! republisher config is not regenerated, the republisher polls stale
-//! addresses. To make that drift *detectable*, the emit stamps the config with
-//! `sim_config_checksum` — the SHA-256 of the canonical simulator config bytes
-//! (see `sim-core::republisher_export`) — computed by [`sha256_hex`]. Both the
-//! emit side and any drift check hash through this one function so the values
-//! can never be produced by two different algorithms.
+//! Provenance checksum for an emitted republisher config, stamped as `sim_config_checksum` so a stale, un-regenerated config becomes detectable drift.
 
 use sha2::{Digest, Sha256};
 
-/// Lowercase hex SHA-256 of `bytes`. Used to stamp and later verify the
-/// `sim_config_checksum` provenance marker on an emitted republisher config.
+/// Lowercase hex SHA-256 of `bytes`; used to stamp and later verify the `sim_config_checksum` provenance marker.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(digest.len() * 2);

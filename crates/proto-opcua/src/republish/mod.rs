@@ -1,5 +1,4 @@
-//! OPC UA republisher adapter: connect to an endpoint, browse the address space
-//! for Variable nodes, and read node values.
+//! OPC UA republisher adapter: connect to an endpoint, browse the address space for Variable nodes, and read node values.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -416,11 +415,7 @@ const MAX_BROWSE_DEPTH: usize = 12;
 /// Safety cap on the number of nodes visited during a browse.
 const MAX_BROWSE_NODES: usize = 20_000;
 
-/// Recursively walk the address space from `Objects`, collecting every Variable
-/// node as a point. Objects/folders are descended (following hierarchical
-/// references and `BrowseNext` continuations); the standard OPC UA core
-/// hierarchy (namespace 0, e.g. the `Server` diagnostics tree) is skipped so the
-/// result is the server's user data, organized by its folder path.
+/// Recursively walks the address space from `Objects`, collecting every Variable node as a point; the namespace-0 core hierarchy is skipped.
 async fn browse_variables(
     session: &Arc<Session>,
     device: &DiscoveredDevice,
@@ -521,8 +516,7 @@ async fn browse_variables(
     Ok(BrowseOutcome { points, warnings })
 }
 
-/// Browse the forward hierarchical references of one node, following any
-/// `BrowseNext` continuation points.
+/// Browses the forward hierarchical references of one node, following any `BrowseNext` continuation points.
 async fn browse_children(
     session: &Arc<Session>,
     node_id: &NodeId,
@@ -561,8 +555,7 @@ async fn browse_children(
     Ok(out)
 }
 
-/// The best human-readable name for a browsed reference: display name, else
-/// browse name, else the node id.
+/// The best human-readable name for a browsed reference: display name, else browse name, else the node id.
 fn reference_name(reference: &ReferenceDescription, node_id: &NodeId) -> String {
     let display = reference.display_name.text.to_string();
     if !display.is_empty() {

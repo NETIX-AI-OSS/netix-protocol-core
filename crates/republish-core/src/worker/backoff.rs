@@ -14,8 +14,7 @@ pub struct DeviceBackoff {
     pub until: Instant,
 }
 
-/// Escalates backoff for devices where every read failed this cycle and clears
-/// it for devices that produced at least one sample.
+/// Escalates backoff for devices where every read failed this cycle and clears it for devices that produced at least one sample.
 pub fn update_device_backoffs(
     backoffs: &mut HashMap<u32, DeviceBackoff>,
     polled_devices: &HashSet<u32>,

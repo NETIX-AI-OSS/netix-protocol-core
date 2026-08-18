@@ -8,13 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::simulation::profiles::ProfileSpec;
 
-/// Default protocol served when a config omits the `protocols` section, so the
-/// bundled BACnet sample keeps working unchanged.
+/// Default protocol served when a config omits the `protocols` section, so the bundled BACnet sample keeps working unchanged.
 const DEFAULT_PROTOCOL_ID: &str = "bacnet";
 const DEFAULT_PROTOCOL_PORT: u16 = 47808;
 
-/// One protocol listener the simulator should expose. The same simulation can be
-/// served over several protocols at once by listing more than one.
+/// One protocol listener the simulator should expose; the same simulation can be served over several protocols at once by listing more than one.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ProtocolInstanceConfig {
     /// Registry id of the adapter (`"bacnet"`, `"modbus"`, `"opcua"`, …).
@@ -95,15 +93,13 @@ pub struct SimulatorConfig {
     pub id_policy: IdPolicy,
     pub templates: HashMap<String, AssetTemplate>,
     pub instances: Vec<AssetInstanceSpec>,
-    /// Protocols to serve the simulation over. When empty, defaults to BACnet on
-    /// 47808 (see [`SimulatorConfig::effective_protocols`]).
+    /// Protocols to serve the simulation over; when empty, defaults to BACnet on 47808 (see [`SimulatorConfig::effective_protocols`]).
     #[serde(default)]
     pub protocols: Vec<ProtocolInstanceConfig>,
 }
 
 impl SimulatorConfig {
-    /// The protocols to actually serve: the configured list, or a single BACnet
-    /// listener when none are specified (keeps the bundled sample working).
+    /// The protocols to actually serve: the configured list, or a single BACnet listener when none are specified.
     pub fn effective_protocols(&self) -> Vec<ProtocolInstanceConfig> {
         if self.protocols.is_empty() {
             vec![ProtocolInstanceConfig {
@@ -116,21 +112,13 @@ impl SimulatorConfig {
         }
     }
 
-    /// Canonical, order-independent serialisation of this simulator config.
-    ///
-    /// Round-tripping through [`serde_json::Value`] normalises every map
-    /// (notably `templates`, a `HashMap` with nondeterministic iteration order)
-    /// into sorted-key JSON objects, so two logically identical configs always
-    /// produce identical bytes — the property a provenance checksum needs.
+    /// Canonical, order-independent serialisation, normalising the nondeterministic `templates` `HashMap` into sorted-key JSON so identical configs always produce identical bytes.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, ConfigError> {
         let value = serde_json::to_value(self).map_err(ConfigError::Serialize)?;
         serde_json::to_vec(&value).map_err(ConfigError::Serialize)
     }
 
-    /// SHA-256 hex of this config's [`canonical_bytes`](Self::canonical_bytes) —
-    /// the `sim_config_checksum` provenance marker stamped onto an emitted
-    /// republisher config, and the value to compare a loaded config against to
-    /// detect drift (see `republish_core::config::AppConfig::check_sim_config_drift`).
+    /// SHA-256 hex of [`canonical_bytes`](Self::canonical_bytes); the `sim_config_checksum` provenance marker used to detect config drift.
     pub fn checksum(&self) -> Result<String, ConfigError> {
         Ok(republish_core::checksum::sha256_hex(
             &self.canonical_bytes()?,
@@ -164,8 +152,7 @@ pub enum ConfigError {
         count: u32,
         block: u32,
     },
-    /// The config could not be serialised to its canonical bytes (e.g. when
-    /// computing the `sim_config_checksum` provenance marker for an emit).
+    /// The config could not be serialised to its canonical bytes.
     Serialize(serde_json::Error),
 }
 

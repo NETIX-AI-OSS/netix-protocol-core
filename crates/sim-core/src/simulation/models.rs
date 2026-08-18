@@ -10,12 +10,10 @@ pub struct SimulatedPoint {
     pub label: String,
     /// Neutral category (analog/binary/multi-state) used by all adapters.
     pub kind: PointKind,
-    /// Raw object-type string from config (e.g. `"analog_input"`). Adapters that
-    /// need finer distinctions than [`PointKind`] (BACnet object types) keep it.
+    /// Raw object-type string from config; adapters needing finer distinctions than [`PointKind`] (BACnet object types) keep it.
     pub object_type: String,
     pub instance: u32,
-    /// Raw engineering-unit string from config (e.g. `"degrees_celsius"`). Each
-    /// adapter maps this to its own representation (BACnet enum, OPC UA EU info).
+    /// Raw engineering-unit string from config; each adapter maps this to its own representation (BACnet enum, OPC UA EU info).
     pub units: Option<String>,
     pub value: PointValue,
     pub profile: ProfileState,
@@ -101,9 +99,7 @@ impl SimulatedDevice {
     }
 }
 
-/// Map a config object-type string to a neutral [`PointKind`]. Returns `None`
-/// for unknown types, which causes the point to be skipped (matching the old
-/// simulator behaviour).
+/// Maps a config object-type string to a neutral [`PointKind`]; `None` for unknown types causes the point to be skipped.
 pub fn point_kind_from_object_type(value: &str) -> Option<PointKind> {
     match value.trim().to_ascii_lowercase().as_str() {
         "analog_input" | "analog_output" | "analog_value" => Some(PointKind::Analog),

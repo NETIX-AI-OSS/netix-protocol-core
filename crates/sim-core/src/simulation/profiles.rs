@@ -87,8 +87,7 @@ fn default_one() -> f32 {
     1.0
 }
 
-/// Sample symmetric noise in `[-noise, noise)`.  Returns 0.0 when `noise` is non-positive,
-/// avoiding a `gen_range` panic on a zero-width range.
+/// Samples symmetric noise in `[-noise, noise)`; returns 0.0 when `noise` is non-positive to avoid a `gen_range` panic on a zero-width range.
 fn sample_noise(rng: &mut impl rand::Rng, noise: f32) -> f32 {
     if noise > 0.0 {
         rng.gen_range(-noise..noise)

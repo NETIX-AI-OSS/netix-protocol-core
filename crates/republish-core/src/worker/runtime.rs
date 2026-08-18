@@ -6,8 +6,7 @@ use crate::log::LogLevel;
 
 use super::events::{log, WorkerEvent};
 
-/// Runs the worker future to completion, returning false if the runtime could not
-/// start or the future panicked.
+/// Runs the worker future to completion, returning false if the runtime could not start or the future panicked.
 pub fn run_async<F>(sender: Sender<WorkerEvent>, future: F) -> bool
 where
     F: std::future::Future<Output = ()>,

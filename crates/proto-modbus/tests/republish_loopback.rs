@@ -1,5 +1,4 @@
-//! Loopback: the Modbus republish adapter polls the Modbus simulator adapter and
-//! decodes live values end-to-end.
+//! Loopback: the Modbus republish adapter polls the Modbus simulator adapter and decodes live values end-to-end.
 #![cfg(all(feature = "sim", feature = "republish"))]
 
 use std::collections::HashMap;

@@ -1,15 +1,8 @@
-//! BACnet/IP protocol adapter — the reference implementation of the generic
-//! simulator/republisher protocol traits.
-//!
-//! - With the `sim` feature it provides [`register_sim`], a BACnet/IP server that
-//!   exposes a `sim-core` simulation.
-//! - With the `republish` feature it provides the discovery/browse/poll client
-//!   used by the republisher.
+//! BACnet/IP protocol adapter — the reference implementation of the generic simulator/republisher protocol traits.
 
 use proto_api::{BrowseKind, Capabilities, DiscoveryKind, FieldSpec};
 
-/// Registry id used in simulator config (`protocol = "bacnet"`) and the
-/// republisher protocol picker.
+/// Registry id used in simulator config (`protocol = "bacnet"`) and the republisher protocol picker.
 pub const ID: &str = "bacnet";
 
 /// BACnet object types accepted as point addressing.
@@ -25,8 +18,7 @@ pub const OBJECT_TYPES: &[&str] = &[
     "multi_state_value",
 ];
 
-/// The protocol's declarative capabilities, shared by the simulator and
-/// republisher sides so the UI can render BACnet controls without hard-coding.
+/// The protocol's declarative capabilities, shared by the simulator and republisher sides so the UI can render BACnet controls without hard-coding.
 pub fn capabilities() -> Capabilities {
     Capabilities {
         id: "bacnet",

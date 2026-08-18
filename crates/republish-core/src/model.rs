@@ -1,5 +1,4 @@
-//! Protocol-neutral data model for the republisher: configured points, discovered
-//! devices/points, poll samples, and per-point status.
+//! Protocol-neutral data model for the republisher: configured points, discovered devices/points, poll samples, and per-point status.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -8,21 +7,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use proto_api::Addressing;
 
-/// A configured point to poll and republish. Protocol-specific addressing lives
-/// in [`PointConfig::addressing`], rendered/edited from the active protocol's
-/// `addressing_fields` capabilities.
+/// A configured point to poll and republish; protocol-specific addressing lives in [`PointConfig::addressing`], rendered/edited from the active protocol's capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PointConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Human-friendly device/endpoint label (also used in the default topic).
-    /// Display label only — NOT part of a point's identity (see [`PointIdentity`]),
-    /// so renaming it never orphans a point's poll/status history. May be spelled
-    /// `device_label` in config.
+    /// Human-friendly device/endpoint label; display only, NOT part of identity (see [`PointIdentity`]) so renaming never orphans poll/status history.
     #[serde(default, alias = "device_label")]
     pub device_key: String,
-    /// Protocol-native address (e.g. `{object_type, object_instance, property}`,
-    /// `{table, address, datatype}`, or `{node_id}`).
+    /// Protocol-native address (e.g. `{object_type, object_instance, property}`, `{table, address, datatype}`, or `{node_id}`).
     #[serde(default)]
     pub addressing: Addressing,
     /// Explicit MQTT tag path; when empty a default is derived from `device_key`.
@@ -54,8 +47,7 @@ impl PointConfig {
             .join(" ")
     }
 
-    /// Human-friendly device label. Alias for [`PointConfig::device_key`]; config
-    /// may spell the field `device_label`, and this accessor returns the same value.
+    /// Human-friendly device label; alias for [`PointConfig::device_key`] (config may spell it `device_label`).
     pub fn device_label(&self) -> &str {
         &self.device_key
     }
@@ -73,17 +65,9 @@ impl PointConfig {
 /// A device/server found by discovery (or entered manually).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredDevice {
-    /// Stable, human-friendly key used as `PointConfig::device_key`.
-    ///
-    /// For BACnet this is derived from the device object's `OBJECT_NAME` (via
-    /// `proto_api::base_key`) when available, so it need not encode the device
-    /// instance; use [`DiscoveredDevice::instance`] for instance-based
-    /// addressing (browse/refresh) rather than parsing the key.
+    /// Stable, human-friendly key used as `PointConfig::device_key`; use [`DiscoveredDevice::instance`] for addressing rather than parsing this key.
     pub key: String,
-    /// Protocol-native numeric device instance, when the discovery protocol has
-    /// one (e.g. the BACnet device instance). Carried alongside the key so
-    /// browse/refresh can resolve the device even when the key is a friendly
-    /// name that no longer encodes the instance.
+    /// Protocol-native numeric device instance, when the discovery protocol has one; lets browse/refresh resolve the device even if the key is a friendly name.
     pub instance: Option<u32>,
     /// Network address (e.g. `192.168.1.10:502`, `opc.tcp://host:4840`).
     pub address: String,
@@ -169,14 +153,9 @@ impl fmt::Display for TelemetryValue {
 pub struct PublishStats {
     /// Samples handed to the outbound channel this cycle (local enqueue attempts).
     pub queued: usize,
-    /// Samples accepted into the outbound channel this cycle — a *local* enqueue
-    /// success, NOT proof the broker received or accepted them. For real delivery
-    /// see [`PublishStats::acked`].
+    /// Samples accepted into the outbound channel this cycle — a *local* success, NOT proof of broker delivery (see [`PublishStats::acked`]).
     pub published: usize,
-    /// Broker-confirmed deliveries (running total of QoS 1 PubAcks seen on the
-    /// connection). This is the honest "delivered" count: it stays flat when the
-    /// broker is unreachable or rejects auth even while `published` keeps climbing
-    /// as samples pile into the local channel.
+    /// Broker-confirmed deliveries (running total of QoS 1 PubAcks); the honest "delivered" count, which stays flat while `published` keeps climbing if the broker is unreachable.
     pub acked: usize,
     pub failed: usize,
     pub reconnects: usize,
@@ -194,10 +173,7 @@ impl PublishStats {
     }
 }
 
-/// Identity used to dedupe points and to key poll/status history: the point's
-/// protocol addressing (`device_instance`, `object_type`, `object_instance`,
-/// `property`, …) only. Deliberately independent of `device_key` so renaming a
-/// device's human-friendly label does not orphan a point's poll/status history.
+/// Identity used to dedupe points and key poll/status history: the point's protocol addressing only, deliberately independent of `device_key`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointIdentity {
     pub addressing: Vec<(String, String)>,

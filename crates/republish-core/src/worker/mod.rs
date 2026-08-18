@@ -34,9 +34,7 @@ const DEFAULT_DEVICE_BACKOFF_MAX: Duration = Duration::from_secs(300);
 const DEVICE_RERESOLVE_INTERVAL: Duration = Duration::from_secs(60);
 const DEVICE_TABLE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(240);
 
-/// The cadence knobs of the continuous republisher loop. Extracted so tests can
-/// drive [`run_republisher`] with tiny intervals while production keeps the real
-/// timings via [`LoopIntervals::default`] (the compile-time consts above).
+/// The cadence knobs of the continuous republisher loop, extracted so tests can drive [`run_republisher`] with tiny intervals.
 struct LoopIntervals {
     /// How often to publish a health snapshot.
     health: Duration,
@@ -76,9 +74,7 @@ fn device_instance(point: &PointConfig) -> Option<u32> {
     }
 }
 
-/// Whether a point's device is currently unavailable to poll — either its I-Am
-/// address is unresolved or it is inside a backoff window. Points with no device
-/// instance (non-BACnet) are never device-blocked.
+/// Whether a point's device is currently unavailable to poll (unresolved I-Am address or inside a backoff window); non-BACnet points are never device-blocked.
 fn device_blocked(
     p: &PointConfig,
     now: Instant,
@@ -93,9 +89,7 @@ fn device_blocked(
     })
 }
 
-/// The broker's fatal-rejection message on the first cycle it appears — `None`
-/// once already reported, or while the connection is healthy. Keeps the poll
-/// loop's fatal check a single flat statement (and separately testable).
+/// The broker's fatal-rejection message on the first cycle it appears; `None` once already reported or while healthy.
 fn fresh_fatal_rejection<P: MqttPublisher>(
     publisher: &P,
     already_reported: bool,
@@ -105,8 +99,7 @@ fn fresh_fatal_rejection<P: MqttPublisher>(
         .flatten()
 }
 
-/// Points eligible for polling this cycle: enabled, resolved, not in backoff,
-/// and past their poll interval.
+/// Points eligible for polling this cycle: enabled, resolved, not in backoff, and past their poll interval.
 fn due_points(
     now: Instant,
     points: &[PointConfig],
@@ -299,11 +292,7 @@ async fn publish_samples<P: MqttPublisher + Send>(
     stats
 }
 
-/// Publish one `netix_envelope` message per device (grouping the batch's samples
-/// by `device_key`): `{"reason","time","id","points":[{"pointName","data",
-/// "status"}]}` on `<device_topic_prefix>/<id>/telemetry`. This matches the
-/// envelope platform MQTT workers ingest, so a demo device's telemetry lands on
-/// the historian tag `<id>-<pointName>`.
+/// Publishes one `netix_envelope` message per device (grouping the batch's samples by `device_key`) on `<device_topic_prefix>/<id>/telemetry`.
 async fn publish_envelope<P: MqttPublisher + Send>(
     sender: &Sender<WorkerEvent>,
     publisher: &mut P,
@@ -612,16 +601,12 @@ pub fn spawn_poll_once(
     });
 }
 
-/// Whether an adapter can build a point set from discovery: it both discovers
-/// devices *and* browses their points. Manual-only discovery or a no-op browse
-/// cannot produce points, so `discover_on_start` has nothing to work with.
+/// Whether an adapter can build a point set from discovery: it must both discover devices and browse their points.
 fn supports_discovery(caps: &Capabilities) -> bool {
     caps.discovery != DiscoveryKind::ManualOnly && caps.browse != BrowseKind::None
 }
 
-/// The lifecycle/log message when a start has no points to publish. Split out so
-/// the exact wording is asserted by a unit test and stays identical in both the
-/// `Warning` log and the `Failed` lifecycle event.
+/// The lifecycle/log message when a start has no points to publish, split out so the exact wording stays identical in both the log and the lifecycle event.
 fn no_points_message(discover_on_start: bool, discovery_supported: bool) -> String {
     if discover_on_start {
         if discovery_supported {
@@ -637,14 +622,7 @@ fn no_points_message(discover_on_start: bool, discovery_supported: bool) -> Stri
     }
 }
 
-/// Discover devices, browse each, and build an in-memory, identity-faithful point
-/// set — the runtime half of "run-from-discovery" (RCA §4 Fix B). Reuses the
-/// shared browse→import path ([`point_from_discovered`] + [`merge_imported_points`]
-/// for identity-keyed dedupe), so the points it builds carry the same
-/// `device_key`/`tag_path` the GUI **Discover** button and the emitted config
-/// produce. Returns the built points plus any discovery/browse warnings for the
-/// caller to surface. Lets a connection-only config poll a self-describing BACnet
-/// source with no hand-authored `config.toml` points.
+/// Discovers devices, browses each, and builds an in-memory point set, letting a connection-only config poll a self-describing BACnet source with no hand-authored points.
 pub async fn discover_points(
     proto: &dyn RepublishProtocol,
     conn: &Addressing,
@@ -676,12 +654,7 @@ pub async fn discover_points(
     Ok((merged.points, warnings))
 }
 
-/// Run the continuous poll→publish loop until `stop` is set.
-///
-/// With no enabled points the worker no longer spins forever publishing nothing
-/// (RCA #2/#4): if `discover_on_start` is set and the adapter supports discovery
-/// it discovers→browses→builds a point set in memory and polls that; otherwise it
-/// emits a loud `Warning` + `Failed` lifecycle event and stops.
+/// Runs the continuous poll→publish loop until `stop` is set; with no enabled points it discovers via `discover_on_start` if supported, else emits `Failed` and stops.
 pub fn spawn_republisher(
     sender: Sender<WorkerEvent>,
     factory: RepublishFactory,
@@ -773,14 +746,7 @@ pub fn spawn_republisher(
     });
 }
 
-/// The continuous poll→publish loop, given an already-resolved (non-empty) point
-/// set and an already-built publisher. Emits `Running`, primes the device table,
-/// then loops on `intervals` until `stop` is set, closing with `Stopping`/`Stopped`.
-///
-/// Split out of [`spawn_republisher`] so the loop is testable without a broker: it
-/// is generic over the [`MqttPublisher`] trait (production passes the real
-/// `RumqttPublisher`) and takes its cadence via [`LoopIntervals`] (production uses
-/// [`LoopIntervals::default`], i.e. the module consts — unchanged behavior).
+/// The continuous poll→publish loop given an already-resolved point set and publisher; split out of [`spawn_republisher`] so it's testable without a broker.
 #[allow(clippy::too_many_arguments)]
 async fn run_republisher<P: MqttPublisher + Send>(
     sender: &Sender<WorkerEvent>,
@@ -1025,8 +991,7 @@ mod tests {
     use crossbeam_channel::unbounded;
     use std::sync::OnceLock;
 
-    /// A minimal manual-only adapter: no discovery, no browse. Used to exercise
-    /// the zero-points startup paths without any network or MQTT dependency.
+    /// A minimal manual-only adapter (no discovery, no browse) to exercise the zero-points startup paths without network/MQTT dependencies.
     struct ManualProto;
 
     fn manual_caps() -> &'static Capabilities {
@@ -1627,8 +1592,7 @@ mod tests {
         Box::new(ScriptedProto)
     }
 
-    /// An MQTT config that never reaches a broker: the event loop stays in
-    /// connect/backoff so `publish` only fills the outbound channel.
+    /// An MQTT config that never reaches a broker: the event loop stays in connect/backoff so `publish` only fills the outbound channel.
     fn offline_mqtt(format: PayloadFormat) -> MqttConfig {
         MqttConfig {
             host: "127.0.0.1".into(),
@@ -1669,8 +1633,7 @@ mod tests {
         }
     }
 
-    /// Tiny loop cadences so the whole loop (health, keepalive, re-resolve, poll,
-    /// shutdown grace) exercises in milliseconds instead of minutes.
+    /// Tiny loop cadences so the whole loop exercises in milliseconds instead of minutes.
     fn tiny_intervals() -> LoopIntervals {
         LoopIntervals {
             health: Duration::from_millis(5),
@@ -1681,10 +1644,7 @@ mod tests {
         }
     }
 
-    /// Drain the worker channel (non-blocking) into a Vec until `done` matches an
-    /// event or the deadline passes, then flip `stop` so a concurrently-`join!`ed
-    /// [`run_republisher`] returns. The short async sleep yields to that loop
-    /// future on the current-thread runtime.
+    /// Drains the worker channel until `done` matches an event or the deadline passes, then flips `stop` so a concurrently-`join!`ed [`run_republisher`] returns.
     async fn drive_until(
         rx: &crossbeam_channel::Receiver<WorkerEvent>,
         stop: &AtomicBool,
@@ -1709,10 +1669,7 @@ mod tests {
         }
     }
 
-    /// A protocol whose device-table refresh reports the targets unresolved on the
-    /// first call, then on every later call either resolves them (recovery) or
-    /// errors — driving the loop's keepalive / re-resolution success and failure
-    /// branches with an observable state transition.
+    /// A protocol whose device-table refresh reports targets unresolved on the first call, then resolves or errors on later calls, driving keepalive/re-resolution branches.
     struct RefreshScript {
         calls: std::sync::atomic::AtomicUsize,
         fail_after_first: bool,
@@ -2764,8 +2721,7 @@ mod tests {
             .any(|e| matches!(e, WorkerEvent::PointPublish { error: Some(_), .. })));
     }
 
-    /// A TLS config with a CA path that holds no certificates: `build_transport`
-    /// (hence `RumqttPublisher::new`) fails without needing a broker.
+    /// A TLS config with a CA path that holds no certificates: `build_transport` (hence `RumqttPublisher::new`) fails without needing a broker.
     fn broken_tls_mqtt() -> (MqttConfig, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let ca = dir.path().join("empty-ca.pem");

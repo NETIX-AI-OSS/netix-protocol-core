@@ -1,8 +1,4 @@
-//! Capability-driven iced GUI for the generic republisher.
-//!
-//! The UI renders protocol-specific connection and point-addressing controls
-//! dynamically from each adapter's [`Capabilities`]/[`FieldSpec`], so adding a
-//! protocol never requires touching this file.
+//! Capability-driven iced GUI for the generic republisher; renders protocol-specific controls dynamically from each adapter's [`Capabilities`]/[`FieldSpec`].
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::Ipv4Addr;
@@ -152,11 +148,9 @@ struct RepublisherApp {
     stop_flag: Option<Arc<AtomicBool>>,
     recent_samples: VecDeque<PointSample>,
     statuses: HashMap<PointIdentity, PointStatus>,
-    /// Local enqueue attempts (samples handed to the MQTT channel). NOT proof of
-    /// delivery — see [`RepublisherApp::acked_total`].
+    /// Local enqueue attempts, NOT proof of delivery — see [`RepublisherApp::acked_total`].
     published_total: usize,
-    /// Broker-confirmed deliveries (running total of QoS 1 PubAcks). The honest
-    /// "delivered" figure the operator should trust.
+    /// Broker-confirmed deliveries (running total of QoS 1 PubAcks); the honest "delivered" figure to trust.
     acked_total: usize,
 
     channel: WorkerChannel,

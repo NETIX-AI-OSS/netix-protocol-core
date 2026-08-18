@@ -3,10 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-/// Protocol-agnostic request/error counters surfaced in the TUI. Adapters record
-/// requests under free-form `kind` labels (e.g. `"who_is"`, `"read_property"`,
-/// `"read_holding_registers"`, `"browse"`), so the dashboard works for any
-/// protocol without the core knowing the label set.
+/// Protocol-agnostic request/error counters surfaced in the TUI, recorded under free-form `kind` labels so the dashboard works for any protocol.
 #[derive(Debug, Default)]
 pub struct AppMetrics {
     requests: AtomicU64,
@@ -21,8 +18,7 @@ impl AppMetrics {
         Self::default()
     }
 
-    /// Record one served request of the given `kind`, optionally noting the
-    /// client/peer that issued it.
+    /// Records one served request of the given `kind`, optionally noting the client/peer that issued it.
     pub fn record_request(&self, kind: &str, client: Option<&str>) {
         self.requests.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut named) = self.named.lock() {

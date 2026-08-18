@@ -1,5 +1,4 @@
-//! Modbus TCP republisher adapter: manual endpoint connection, register-range
-//! browse, and value polling with per-point datatype/word-order/scale decoding.
+//! Modbus TCP republisher adapter: manual endpoint connection, register-range browse, and value polling with per-point datatype/word-order/scale decoding.
 
 mod scan;
 

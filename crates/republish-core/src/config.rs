@@ -1,5 +1,4 @@
-//! Republisher configuration (TOML): selected protocol + per-protocol connection
-//! settings, MQTT/TLS target, configured points, and UI preferences.
+//! Republisher configuration (TOML): selected protocol + per-protocol connection settings, MQTT/TLS target, configured points, and UI preferences.
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -29,20 +28,10 @@ pub struct AppConfig {
     pub mqtt: MqttConfig,
     #[serde(default)]
     pub points: Vec<PointConfig>,
-    /// Run-from-discovery: when `true` and no points are enabled, the republisher
-    /// discovers devices, browses their points, and polls the discovered set
-    /// (built in memory), so `config.toml` collapses to connection-only for a
-    /// self-describing protocol like BACnet. When `false` (default), a start with
-    /// no enabled points fails loud instead of spinning forever publishing
-    /// nothing — see [`crate::worker::spawn_republisher`].
+    /// Run-from-discovery: when `true` and no points are enabled, the republisher discovers/browses/polls the set in memory instead of failing loud (see [`crate::worker::spawn_republisher`]).
     #[serde(default)]
     pub discover_on_start: bool,
-    /// Provenance marker for a config emitted by the simulator: the SHA-256 hex
-    /// of the canonical simulator config bytes it was generated from (see
-    /// `sim-core::republisher_export`). Absent for hand-written or GUI-authored
-    /// configs. When present it lets a loader detect *drift* — the simulator
-    /// config changed but this republisher config was never regenerated, so its
-    /// addresses are stale — via [`AppConfig::check_sim_config_drift`].
+    /// Provenance marker for a simulator-emitted config, absent for hand-written ones; lets a loader detect stale-address drift via [`AppConfig::check_sim_config_drift`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sim_config_checksum: Option<String>,
     #[serde(default)]
@@ -67,11 +56,7 @@ pub struct MqttConfig {
     pub username: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
-    /// Name of an environment variable that holds the MQTT password. When set
-    /// and the variable is present at load time, the password is read from the
-    /// environment (env wins) and the secret itself is **never** written to the
-    /// config file — only this variable *name* is persisted. This is the
-    /// supported way to keep the broker secret out of plaintext on disk.
+    /// Name of an env var holding the MQTT password; when set, env wins at load time and the secret itself is never written to the config file.
     #[serde(default)]
     pub password_env: Option<String>,
     #[serde(default)]
@@ -91,9 +76,7 @@ pub struct MqttConfig {
     /// How telemetry is serialised onto MQTT (default: bare scalar per point).
     #[serde(default)]
     pub payload_format: PayloadFormat,
-    /// Topic prefix for `netix_envelope` publishes; the leading slash is
-    /// preserved so `/Netix/Sim/Device/<id>/telemetry` matches a subscription
-    /// on `/Netix/Sim/Device/#`.
+    /// Topic prefix for `netix_envelope` publishes; the leading slash is preserved so it matches a subscription on `/Netix/Sim/Device/#`.
     #[serde(default = "default_device_topic_prefix")]
     pub device_topic_prefix: String,
     /// Start republishing automatically on launch (no manual "Start" click).
@@ -105,13 +88,9 @@ pub struct MqttConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PayloadFormat {
-    /// One message per point: the bare JSON scalar value, on the point's tag
-    /// topic (`<topic_prefix>/<tag_path>`).
+    /// One message per point: the bare JSON scalar value, on the point's tag topic (`<topic_prefix>/<tag_path>`).
     Scalar,
-    /// One message per device: a `{reason,time,id,points:[{pointName,data,status}]}`
-    /// envelope on `<device_topic_prefix>/<id>/telemetry`, where `id` is the
-    /// point's `device_key` and `pointName` is its `tag_path`. This is the
-    /// pipeline default (see [`crate::defaults::PAYLOAD_FORMAT`]).
+    /// One message per device: an envelope on `<device_topic_prefix>/<id>/telemetry`; the pipeline default (see [`crate::defaults::PAYLOAD_FORMAT`]).
     #[default]
     NetixEnvelope,
 }
@@ -120,9 +99,7 @@ impl PayloadFormat {
     /// All variants, in menu order, for the settings picker.
     pub const ALL: [Self; 2] = [Self::Scalar, Self::NetixEnvelope];
 
-    /// The config/TOML token for this format (matches the serde `snake_case`
-    /// rename). Used by the simulator's emit so the emitted string and the
-    /// deserialised value can never drift apart.
+    /// The config/TOML token for this format (matches the serde `snake_case` rename), used by the simulator's emit so string and value can never drift apart.
     pub fn as_config_token(&self) -> &'static str {
         match self {
             Self::Scalar => "scalar",
@@ -214,23 +191,12 @@ impl AppConfig {
         self.version = CURRENT_CONFIG_VERSION;
     }
 
-    /// The stored simulator-config provenance checksum, if this config was
-    /// emitted by the simulator (see [`sim_config_checksum`](Self::sim_config_checksum)).
+    /// The stored simulator-config provenance checksum, if this config was emitted by the simulator.
     pub fn sim_config_checksum(&self) -> Option<&str> {
         self.sim_config_checksum.as_deref()
     }
 
-    /// Detect simulator-config drift: compare the stored
-    /// [`sim_config_checksum`](Self::sim_config_checksum) (the simulator config
-    /// this republisher config was emitted from) against `current_checksum`
-    /// (the checksum of the simulator config in effect now). On mismatch this
-    /// logs a `Warning` and returns the message; the caller decides what to do.
-    ///
-    /// This is intentionally **non-fatal**: it returns `None` (and logs nothing)
-    /// when no checksum is stored — a hand-written or GUI-authored config has no
-    /// simulator provenance to drift from — and when the checksums match. A
-    /// mismatch means the simulator config changed but this config was never
-    /// regenerated, so its addresses may be stale; regenerate to resync.
+    /// Compares the stored provenance checksum against `current_checksum`, logging and returning a warning on mismatch; `None` (non-fatal) when unstored or matching.
     pub fn check_sim_config_drift(&self, current_checksum: &str) -> Option<String> {
         let stored = self.sim_config_checksum.as_deref()?;
         if stored == current_checksum {
@@ -311,11 +277,7 @@ impl AppConfig {
 }
 
 impl MqttConfig {
-    /// If [`password_env`](Self::password_env) names an environment variable
-    /// that is set (and non-empty), populate [`password`](Self::password) from
-    /// it. The secret is taken from the process environment at load time and is
-    /// never written back to disk (env wins; the file stores only the variable
-    /// *name*). Returns `true` if a password was resolved from the environment.
+    /// If [`password_env`](Self::password_env) names a set env var, populates [`password`](Self::password) from it (env wins, never written back to disk); returns whether it resolved.
     pub fn resolve_password_env(&mut self) -> bool {
         let Some(var) = self.password_env.as_deref().map(str::trim) else {
             return false;
@@ -333,11 +295,7 @@ impl MqttConfig {
     }
 }
 
-/// A warning message when a plaintext MQTT secret is (or is about to be) written
-/// to the config file — i.e. `remember_secrets = true` and a password or client
-/// key passphrase is present. Returns `None` when no plaintext secret is being
-/// persisted. Callers log this at save and load time so operators are told to
-/// prefer `password_env` (env indirection) over on-disk plaintext.
+/// A warning when a plaintext MQTT secret is (or is about to be) written to the config file; `None` when nothing plaintext is being persisted.
 pub fn plaintext_secret_warning(mqtt: &MqttConfig) -> Option<String> {
     let non_empty = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.trim().is_empty());
     let persists_plaintext = mqtt.remember_secrets

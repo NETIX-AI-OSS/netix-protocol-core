@@ -1,5 +1,4 @@
-//! End-to-end test of the Modbus simulator adapter: boot `serve()` on a local
-//! port and read it back with the tokio-modbus client.
+//! End-to-end test of the Modbus simulator adapter: boot `serve()` on a local port and read it back with the tokio-modbus client.
 #![cfg(feature = "sim")]
 
 use std::collections::HashMap;

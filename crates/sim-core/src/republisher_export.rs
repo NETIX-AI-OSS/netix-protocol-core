@@ -1,18 +1,4 @@
-//! Emit a matching `netix-republisher` `config.toml` from a simulator config.
-//!
-//! The simulator assigns BACnet device instances and per-object-type instance
-//! numbers deterministically (see [`SimulatorConfig::expand`]). A republisher
-//! that polls the simulator needs those exact addresses. Rather than have an
-//! operator re-enter ~hundreds of points by hand (or hope a hand-written map
-//! stays in sync), this module walks the *expanded* model and emits a ready
-//! republisher config: one `[[points]]` per served BACnet object, addressed by
-//! `(device_instance, object_type, object_instance)`, with `device_key` = the
-//! instance's `name_prefix` and `tag_path` = the point label.
-//!
-//! It emits `payload_format = "netix_envelope"`, so the republisher publishes
-//! `{"reason","time","id","points":[{"pointName","data","status"}]}` per device
-//! to `<device_topic_prefix>/<id>/telemetry` — the shape platform MQTT workers
-//! ingest.
+//! Emits a matching `netix-republisher` `config.toml` from a simulator config, walking the *expanded* model so BACnet addresses stay in sync without hand-editing.
 
 use std::collections::HashMap;
 
@@ -26,10 +12,7 @@ fn toml_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Build a republisher `config.toml` (as a string) from `config`.
-///
-/// `mqtt_host` is written verbatim as the broker host; pass the platform MQTT
-/// ingress reachable from wherever the republisher runs.
+/// Builds a republisher `config.toml` (as a string) from `config`; `mqtt_host` is written verbatim as the broker host.
 pub fn emit_republisher_config(
     config: &SimulatorConfig,
     mqtt_host: &str,
