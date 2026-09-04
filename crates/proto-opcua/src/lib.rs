@@ -51,3 +51,37 @@ mod republish;
 pub fn register_republish(registry: &mut republish_core::RepublishRegistry) {
     registry.register(ID, republish::republish_factory);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proto_api::{CapabilitiesDto, FieldKind};
+
+    #[test]
+    fn capabilities_round_trip_through_wire_dto() {
+        let caps = capabilities();
+        let json = serde_json::to_value(&caps).unwrap();
+        assert_eq!(json["id"], ID);
+        assert_eq!(json["discovery"], "endpoint_query");
+        assert_eq!(json["browse"], "address_space");
+        assert_eq!(json["default_port"], 4840);
+        let back: CapabilitiesDto = serde_json::from_value(json).unwrap();
+        assert_eq!(back, caps.to_dto());
+        // The security pick-list and the secret field must survive the wire so a UI can render them.
+        let policy = back
+            .connection_fields
+            .iter()
+            .find(|f| f.key == "security_policy")
+            .unwrap();
+        assert_eq!(
+            policy.kind,
+            FieldKind::Enum(vec!["none".into(), "basic256sha256".into()])
+        );
+        let password = back
+            .connection_fields
+            .iter()
+            .find(|f| f.key == "password")
+            .unwrap();
+        assert_eq!(password.kind, FieldKind::Secret);
+    }
+}
