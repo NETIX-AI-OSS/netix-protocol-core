@@ -136,12 +136,31 @@ pub struct BrowseOutcome {
     pub warnings: Vec<String>,
 }
 
-/// A scalar telemetry value: numeric or text (booleans/enums become text); untagged on the wire, so it is the bare JSON number or string (see [`TelemetryValue::as_json_value`]).
+/// A scalar telemetry value: numeric or text (booleans/enums become text); untagged on the wire, so it is the bare JSON number or string (see [`TelemetryValue::as_json_value`]), and a non-finite number is `null` both ways.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, from = "TelemetryWire")]
 pub enum TelemetryValue {
     Number(f64),
     Text(String),
+}
+
+// Wire twin that also accepts `null` (what serde_json emits for NaN/inf) so one bad reading cannot poison a whole outcome.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TelemetryWire {
+    Number(f64),
+    Text(String),
+    Null(()),
+}
+
+impl From<TelemetryWire> for TelemetryValue {
+    fn from(wire: TelemetryWire) -> Self {
+        match wire {
+            TelemetryWire::Number(value) => Self::Number(value),
+            TelemetryWire::Text(value) => Self::Text(value),
+            TelemetryWire::Null(()) => Self::Number(f64::NAN),
+        }
+    }
 }
 
 impl TelemetryValue {
@@ -469,6 +488,40 @@ mod tests {
         let int: TelemetryValue = serde_json::from_value(serde_json::json!(3)).unwrap();
         assert_eq!(int, TelemetryValue::Number(3.0));
         assert!(serde_json::from_value::<TelemetryValue>(serde_json::json!(true)).is_err());
+        assert!(serde_json::from_value::<TelemetryValue>(serde_json::json!([1])).is_err());
+    }
+
+    #[test]
+    fn non_finite_telemetry_is_null_on_the_wire_and_decodes_to_nan() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let json = serde_json::to_value(TelemetryValue::Number(value)).unwrap();
+            assert_eq!(json, serde_json::Value::Null);
+            assert_eq!(json, TelemetryValue::Number(value).as_json_value());
+            let back: TelemetryValue = serde_json::from_value(json).unwrap();
+            assert!(matches!(back, TelemetryValue::Number(v) if v.is_nan()));
+        }
+        // A NaN sample must not make the whole poll outcome undecodable.
+        let outcome = PollOutcome {
+            samples: vec![PointSample {
+                point: point("ahu-12", &[("object_instance", serde_json::json!(3))]),
+                value: TelemetryValue::Number(f64::NAN),
+                topic: "netix/ahu-12/temp".into(),
+                timestamp_ms: 1,
+            }],
+            ..PollOutcome::default()
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains(r#""value":null"#));
+        let back: PollOutcome = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.samples.len(), 1);
+        assert!(matches!(back.samples[0].value, TelemetryValue::Number(v) if v.is_nan()));
+        assert_eq!(back.samples[0].topic, "netix/ahu-12/temp");
+        // An optional discovered value stays `None` for null rather than becoming NaN.
+        let point: DiscoveredPoint = serde_json::from_str(
+            r#"{"device_key":"d","suggested_tag_path":"d/p","value":null,"instance":null}"#,
+        )
+        .unwrap();
+        assert_eq!(point.value, None);
     }
 
     #[test]
