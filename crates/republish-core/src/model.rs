@@ -62,8 +62,8 @@ impl PointConfig {
     }
 }
 
-/// A device/server found by discovery (or entered manually).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A device/server found by discovery (or entered manually); part of the discovery wire contract, so it serialises as-is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveredDevice {
     /// Stable, human-friendly key used as `PointConfig::device_key`; use [`DiscoveredDevice::instance`] for addressing rather than parsing this key.
     pub key: String,
@@ -75,21 +75,26 @@ pub struct DiscoveredDevice {
     pub detail: String,
 }
 
-/// A point found by browsing a device.
-#[derive(Debug, Clone, PartialEq)]
+/// A point found by browsing a device; part of the discovery wire contract, so it serialises as-is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveredPoint {
     pub device_key: String,
+    #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
     pub units: Option<String>,
+    #[serde(default)]
     pub value: Option<TelemetryValue>,
     /// Protocol-native addressing to copy into a [`PointConfig`].
+    #[serde(default)]
     pub addressing: Addressing,
     /// Suggested MQTT tag path (used to prefill the point editor).
     pub suggested_tag_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PointSample {
     pub point: PointConfig,
     pub value: TelemetryValue,
@@ -97,33 +102,43 @@ pub struct PointSample {
     pub timestamp_ms: i64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PointFailure {
     pub point: PointConfig,
     pub error: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PollOutcome {
+    #[serde(default)]
     pub samples: Vec<PointSample>,
+    #[serde(default)]
     pub failures: Vec<PointFailure>,
+    #[serde(default)]
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Result of [`crate::RepublishProtocol::discover`]; the JSON form is the discovery agent's wire contract, and an empty `{}` decodes to the default.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DiscoverOutcome {
+    #[serde(default)]
     pub devices: Vec<DiscoveredDevice>,
+    #[serde(default)]
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+/// Result of [`crate::RepublishProtocol::browse`]; the JSON form is the discovery agent's wire contract, and an empty `{}` decodes to the default.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BrowseOutcome {
+    #[serde(default)]
     pub points: Vec<DiscoveredPoint>,
+    #[serde(default)]
     pub warnings: Vec<String>,
 }
 
-/// A scalar telemetry value: numeric or text (booleans/enums become text).
-#[derive(Debug, Clone, PartialEq)]
+/// A scalar telemetry value: numeric or text (booleans/enums become text); untagged on the wire, so it is the bare JSON number or string (see [`TelemetryValue::as_json_value`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum TelemetryValue {
     Number(f64),
     Text(String),
@@ -422,6 +437,166 @@ mod tests {
         // A publish success clears it.
         status.record_publish_success();
         assert_eq!(status.last_publish_error, None);
+    }
+
+    fn discovered_point(device: &str, name: &str, instance: u32) -> DiscoveredPoint {
+        let mut addressing = Addressing::new();
+        addressing.insert("object_type".into(), serde_json::json!("analogInput"));
+        addressing.insert("object_instance".into(), serde_json::json!(instance));
+        DiscoveredPoint {
+            device_key: device.to_string(),
+            name: Some(name.to_string()),
+            description: None,
+            units: Some("degC".into()),
+            value: Some(TelemetryValue::Number(21.5)),
+            addressing,
+            suggested_tag_path: format!("{device}/{name}"),
+        }
+    }
+
+    #[test]
+    fn telemetry_value_serde_is_untagged_and_matches_as_json_value() {
+        for value in [
+            TelemetryValue::Number(12.5),
+            TelemetryValue::Text("active".into()),
+        ] {
+            let json = serde_json::to_value(&value).unwrap();
+            assert_eq!(json, value.as_json_value());
+            let back: TelemetryValue = serde_json::from_value(json).unwrap();
+            assert_eq!(back, value);
+        }
+        // Integers on the wire decode as numbers, not text.
+        let int: TelemetryValue = serde_json::from_value(serde_json::json!(3)).unwrap();
+        assert_eq!(int, TelemetryValue::Number(3.0));
+        assert!(serde_json::from_value::<TelemetryValue>(serde_json::json!(true)).is_err());
+    }
+
+    #[test]
+    fn discover_outcome_serialises_two_devices_with_wire_keys() {
+        let outcome = DiscoverOutcome {
+            devices: vec![
+                DiscoveredDevice {
+                    key: "ahu-12".into(),
+                    instance: Some(12),
+                    address: "192.168.1.10:47808".into(),
+                    detail: "Vendor X / AHU".into(),
+                },
+                DiscoveredDevice {
+                    key: "plc-1".into(),
+                    instance: None,
+                    address: "192.168.1.20:502".into(),
+                    detail: String::new(),
+                },
+            ],
+            warnings: vec!["1 device did not answer".into()],
+        };
+        let json = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "devices": [
+                    {"key": "ahu-12", "instance": 12, "address": "192.168.1.10:47808", "detail": "Vendor X / AHU"},
+                    {"key": "plc-1", "instance": null, "address": "192.168.1.20:502", "detail": ""},
+                ],
+                "warnings": ["1 device did not answer"],
+            })
+        );
+        let back: DiscoverOutcome = serde_json::from_value(json).unwrap();
+        assert_eq!(back, outcome);
+    }
+
+    #[test]
+    fn browse_outcome_serialises_points_with_addressing_map() {
+        let outcome = BrowseOutcome {
+            points: vec![
+                discovered_point("ahu-12", "SupplyTemp", 3),
+                DiscoveredPoint {
+                    value: Some(TelemetryValue::Text("active".into())),
+                    units: None,
+                    ..discovered_point("ahu-12", "FanStatus", 4)
+                },
+            ],
+            warnings: vec![],
+        };
+        let json = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "points": [
+                    {
+                        "device_key": "ahu-12",
+                        "name": "SupplyTemp",
+                        "description": null,
+                        "units": "degC",
+                        "value": 21.5,
+                        "addressing": {"object_instance": 3, "object_type": "analogInput"},
+                        "suggested_tag_path": "ahu-12/SupplyTemp",
+                    },
+                    {
+                        "device_key": "ahu-12",
+                        "name": "FanStatus",
+                        "description": null,
+                        "units": null,
+                        "value": "active",
+                        "addressing": {"object_instance": 4, "object_type": "analogInput"},
+                        "suggested_tag_path": "ahu-12/FanStatus",
+                    },
+                ],
+                "warnings": [],
+            })
+        );
+        let back: BrowseOutcome = serde_json::from_value(json).unwrap();
+        assert_eq!(back, outcome);
+    }
+
+    #[test]
+    fn empty_outcomes_round_trip_from_empty_objects() {
+        let discover: DiscoverOutcome = serde_json::from_str("{}").unwrap();
+        assert_eq!(discover, DiscoverOutcome::default());
+        let browse: BrowseOutcome = serde_json::from_str("{}").unwrap();
+        assert_eq!(browse, BrowseOutcome::default());
+        let poll: PollOutcome = serde_json::from_str("{}").unwrap();
+        assert_eq!(poll, PollOutcome::default());
+        // A point with only its identity fields decodes with empty optionals and addressing.
+        let point: DiscoveredPoint =
+            serde_json::from_str(r#"{"device_key":"d","suggested_tag_path":"d/p"}"#).unwrap();
+        assert_eq!(point.name, None);
+        assert_eq!(point.value, None);
+        assert!(point.addressing.is_empty());
+        // Round-trip the defaults themselves too.
+        let json = serde_json::to_string(&DiscoverOutcome::default()).unwrap();
+        assert_eq!(json, r#"{"devices":[],"warnings":[]}"#);
+    }
+
+    #[test]
+    fn poll_outcome_round_trips_samples_and_failures() {
+        let point = point("ahu-12", &[("object_instance", serde_json::json!(3))]);
+        let outcome = PollOutcome {
+            samples: vec![PointSample {
+                point: point.clone(),
+                value: TelemetryValue::Number(1.25),
+                topic: "netix/ahu-12/temp".into(),
+                timestamp_ms: 1_700_000_000_000,
+            }],
+            failures: vec![PointFailure {
+                point,
+                error: "timeout".into(),
+            }],
+            warnings: vec!["slow".into()],
+        };
+        let json = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(json["samples"][0]["value"], 1.25);
+        assert_eq!(json["samples"][0]["topic"], "netix/ahu-12/temp");
+        assert_eq!(json["samples"][0]["timestamp_ms"], 1_700_000_000_000_i64);
+        assert_eq!(json["samples"][0]["point"]["device_key"], "ahu-12");
+        assert_eq!(json["failures"][0]["error"], "timeout");
+        assert_eq!(
+            json["failures"][0]["point"]["addressing"]["object_instance"],
+            3
+        );
+        assert_eq!(json["warnings"][0], "slow");
+        let back: PollOutcome = serde_json::from_value(json).unwrap();
+        assert_eq!(back, outcome);
     }
 
     #[test]
