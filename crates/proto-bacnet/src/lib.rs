@@ -83,3 +83,30 @@ pub use republish::value::{decode_scalar_value, DecodeError};
 pub fn register_republish(registry: &mut republish_core::RepublishRegistry) {
     registry.register(ID, republish::republish_factory);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proto_api::{CapabilitiesDto, FieldKind};
+
+    #[test]
+    fn capabilities_round_trip_through_wire_dto() {
+        let caps = capabilities();
+        let json = serde_json::to_value(&caps).unwrap();
+        assert_eq!(json["id"], ID);
+        assert_eq!(json["discovery"], "broadcast");
+        assert_eq!(json["browse"], "object_list");
+        assert_eq!(json["default_port"], 47808);
+        let back: CapabilitiesDto = serde_json::from_value(json).unwrap();
+        assert_eq!(back, caps.to_dto());
+        // The object-type pick-list must survive the wire with its options and default intact.
+        let object_type = back
+            .addressing_fields
+            .iter()
+            .find(|f| f.key == "object_type")
+            .unwrap();
+        let options: Vec<String> = OBJECT_TYPES.iter().map(|s| s.to_string()).collect();
+        assert_eq!(object_type.kind, FieldKind::Enum(options));
+        assert_eq!(object_type.default, Some(serde_json::json!("analog_input")));
+    }
+}

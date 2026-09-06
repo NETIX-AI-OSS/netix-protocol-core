@@ -27,6 +27,11 @@ the republisher-side trait (`republish-core::RepublishProtocol`, behind feature
 `republish`). A binary selects adapters by enabling features and calling each
 crate's `register_sim` / `register_republish`.
 
+The republisher-side types are also the discovery **wire contract**: an
+adapter's `Capabilities` (deserialised as `CapabilitiesDto`), `DiscoverOutcome`,
+`BrowseOutcome` and `PollOutcome` serialise with serde, so a headless discovery
+agent can ship them as JSON to a UI without protocol-specific code.
+
 ## Consuming these crates
 
 The binary repos depend on the relevant crates by git, pinning the commit in
