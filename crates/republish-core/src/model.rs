@@ -63,7 +63,7 @@ impl PointConfig {
 }
 
 /// A device/server found by discovery (or entered manually); part of the discovery wire contract, so it serialises as-is.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveredDevice {
     /// Stable, human-friendly key used as `PointConfig::device_key`; use [`DiscoveredDevice::instance`] for addressing rather than parsing this key.
     pub key: String,
@@ -73,6 +73,15 @@ pub struct DiscoveredDevice {
     pub address: String,
     /// Free-form detail line for the UI (vendor, model, instance, …).
     pub detail: String,
+    /// Protocol-registered manufacturer number (BACnet I-Am vendor-identifier, assigned by ASHRAE); absent when the protocol has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor_id: Option<u32>,
+    /// Manufacturer as the device names itself (BACnet vendor-name, Modbus Read Device Identification VendorName); absent when it did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor_name: Option<String>,
+    /// Model as the device names itself (BACnet model-name, Modbus ModelName/ProductName/ProductCode); absent when it did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
 }
 
 /// A point found by browsing a device; part of the discovery wire contract, so it serialises as-is.
@@ -533,12 +542,14 @@ mod tests {
                     instance: Some(12),
                     address: "192.168.1.10:47808".into(),
                     detail: "Vendor X / AHU".into(),
+                    ..Default::default()
                 },
                 DiscoveredDevice {
                     key: "plc-1".into(),
                     instance: None,
                     address: "192.168.1.20:502".into(),
                     detail: String::new(),
+                    ..Default::default()
                 },
             ],
             warnings: vec!["1 device did not answer".into()],
@@ -556,6 +567,44 @@ mod tests {
         );
         let back: DiscoverOutcome = serde_json::from_value(json).unwrap();
         assert_eq!(back, outcome);
+    }
+
+    #[test]
+    fn discovered_device_identity_is_on_the_wire_only_when_known() {
+        let device = DiscoveredDevice {
+            key: "ahu-12".into(),
+            instance: Some(12),
+            vendor_id: Some(17),
+            vendor_name: Some("Honeywell".into()),
+            model_name: Some("Spyder".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&device).unwrap();
+        assert_eq!(json["vendor_id"], 17);
+        assert_eq!(json["vendor_name"], "Honeywell");
+        assert_eq!(json["model_name"], "Spyder");
+        assert_eq!(
+            serde_json::from_value::<DiscoveredDevice>(json).unwrap(),
+            device
+        );
+
+        let unnamed = serde_json::to_value(DiscoveredDevice::default()).unwrap();
+        assert_eq!(
+            unnamed,
+            serde_json::json!({"key": "", "instance": null, "address": "", "detail": ""})
+        );
+    }
+
+    #[test]
+    fn a_device_from_an_older_agent_has_no_identity() {
+        let device: DiscoveredDevice = serde_json::from_str(
+            r#"{"key":"ahu-12","instance":12,"address":"10.0.0.1:47808","detail":"instance 12, vendor 17"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (device.vendor_id, device.vendor_name, device.model_name),
+            (None, None, None)
+        );
     }
 
     #[test]

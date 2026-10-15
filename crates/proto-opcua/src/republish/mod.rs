@@ -316,6 +316,7 @@ impl RepublishProtocol for OpcuaRepublishProtocol {
                         instance: None,
                         address,
                         detail: endpoint_detail(&endpoint),
+                        ..Default::default()
                     });
                 }
             }
@@ -339,6 +340,7 @@ impl RepublishProtocol for OpcuaRepublishProtocol {
                 instance: None,
                 address: url,
                 detail: "OPC UA server (connect-check only)".into(),
+                ..Default::default()
             });
         }
 

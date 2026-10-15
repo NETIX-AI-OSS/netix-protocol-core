@@ -8,10 +8,15 @@ use bacnet_transport::bip::BipTransport;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
-use republish_core::model::{DiscoveredPoint, PointConfig, PollOutcome, TelemetryValue};
+use republish_core::model::{
+    DiscoveredDevice, DiscoveredPoint, PointConfig, PollOutcome, TelemetryValue,
+};
 
 use super::value::{decode_object_id, decode_unsigned, object_type_name};
-use super::{poll_with_client, read_scalar, resolve_device_key, scan_objects, MAX_BROWSE_OBJECTS};
+use super::{
+    collect_devices, poll_with_client, read_scalar, resolve_device_key, scan_objects,
+    MAX_BROWSE_OBJECTS,
+};
 
 type BacnetIpClient = BACnetClient<BipTransport>;
 
@@ -135,6 +140,11 @@ pub async fn scan_device_objects_with_client(
         });
     }
     Ok(objects)
+}
+
+/// The devices in the client's I-Am cache as the real discover path reports them: key, vendor-identifier, vendor-name and model-name.
+pub async fn discover_devices_with_client(client: &BacnetIpClient) -> Vec<DiscoveredDevice> {
+    collect_devices(client).await
 }
 
 /// Resolves the identity-faithful device key for `device_instance` by reading `OBJECT_NAME` via the real discovery path, e.g. `"ahu-12"` for `"ahu-12-001"`.

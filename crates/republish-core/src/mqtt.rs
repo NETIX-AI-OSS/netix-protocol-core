@@ -975,6 +975,98 @@ mod tests {
     }
 
     #[test]
+    fn build_transport_names_the_client_certificate_it_cannot_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca_path, _, key_path) = write_test_tls_material(dir.path());
+        let cfg = MqttConfig {
+            use_tls: true,
+            ca_cert_path: Some(ca_path.to_string_lossy().into_owned()),
+            client_cert_path: Some("/nonexistent/client.pem".into()),
+            client_key_path: Some(key_path.to_string_lossy().into_owned()),
+            ..MqttConfig::default()
+        };
+        let error = build_transport(&cfg)
+            .err()
+            .expect("expected a certificate error");
+        assert!(
+            format!("{error:#}").contains("failed to load MQTT client certificate"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn build_transport_names_the_client_key_it_cannot_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca_path, cert_path, _) = write_test_tls_material(dir.path());
+        let cfg = MqttConfig {
+            use_tls: true,
+            ca_cert_path: Some(ca_path.to_string_lossy().into_owned()),
+            client_cert_path: Some(cert_path.to_string_lossy().into_owned()),
+            client_key_path: Some("/nonexistent/client.key".into()),
+            ..MqttConfig::default()
+        };
+        let error = build_transport(&cfg).err().expect("expected a key error");
+        assert!(
+            format!("{error:#}").contains("failed to load MQTT client key"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn pem_loaders_reject_malformed_and_missing_material() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_cert = dir.path().join("bad-cert.pem");
+        std::fs::write(
+            &bad_cert,
+            b"-----BEGIN CERTIFICATE-----\n!!!not base64!!!\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let error = load_cert_chain(&bad_cert).expect_err("expected a parse error");
+        assert!(
+            format!("{error:#}").contains("failed to parse certificates"),
+            "{error:#}"
+        );
+
+        let bad_key = dir.path().join("bad-key.pem");
+        std::fs::write(
+            &bad_key,
+            b"-----BEGIN PRIVATE KEY-----\n!!!not base64!!!\n-----END PRIVATE KEY-----\n",
+        )
+        .unwrap();
+        let error = load_private_key(&bad_key).expect_err("expected a parse error");
+        assert!(
+            format!("{error:#}").contains("failed to parse private key"),
+            "{error:#}"
+        );
+
+        // A certificate where a key should be: valid PEM, but no key in it.
+        let (_, cert_path, _) = write_test_tls_material(dir.path());
+        let error = load_private_key(&cert_path).expect_err("expected a missing key");
+        assert!(
+            format!("{error:#}").contains("no private key found"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn connection_state_keeps_counting_when_its_error_lock_is_poisoned() {
+        let state = ConnectionState::default();
+        let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.last_error.lock().unwrap();
+            panic!("poison the last_error lock");
+        }));
+        assert!(poison.is_err() && state.last_error.is_poisoned());
+
+        state.record_connack(ConnectReturnCode::Success);
+        assert!(state.connected.load(Ordering::Relaxed));
+        state.record_error("transport dropped");
+        assert!(!state.connected.load(Ordering::Relaxed));
+        assert_eq!(state.reconnects.load(Ordering::Relaxed), 1);
+        state.record_fatal("broker rejected the login");
+        assert!(state.fatal.load(Ordering::Relaxed));
+    }
+
+    #[test]
     fn rumqtt_publisher_new_requires_a_tokio_runtime() {
         // Called with no current runtime it must fail fast rather than panic later.
         let cfg = MqttConfig {

@@ -1087,6 +1087,40 @@ mod tests {
     }
 
     #[test]
+    fn apply_refresh_state_ignores_repeat_reports() {
+        // 100 was never unresolved; 200 already is: neither is a transition.
+        let mut unresolved = HashSet::from([200u32]);
+        let mut backoffs = HashMap::new();
+        let refresh = RefreshOutcome {
+            resolved: vec![100],
+            unresolved: vec![200],
+        };
+
+        let change = apply_refresh_state(&mut unresolved, &mut backoffs, &refresh);
+
+        assert!(change.newly_resolved.is_empty());
+        assert!(change.newly_unresolved.is_empty());
+        assert_eq!(unresolved, HashSet::from([200u32]));
+    }
+
+    #[test]
+    fn emit_refresh_state_change_without_transitions_is_silent() {
+        let (tx, rx) = unbounded();
+        let mut status = HashMap::new();
+
+        emit_refresh_state_change(
+            &tx,
+            &[bacnet_point(500, true)],
+            "keepalive",
+            RefreshStateChange::default(),
+            &mut status,
+        );
+
+        assert!(rx.try_recv().is_err());
+        assert!(status.is_empty());
+    }
+
+    #[test]
     fn record_unresolved_failures_emits_failures_and_updates_status() {
         let (tx, rx) = unbounded();
         let points = vec![bacnet_point(42, true), bacnet_point(99, true)];
@@ -1481,6 +1515,7 @@ mod tests {
                     instance: Some(1000 + i as u32),
                     address: "127.0.0.1".into(),
                     detail: String::new(),
+                    ..Default::default()
                 });
             }
             if flag(conn, "bad_device") {
@@ -1489,6 +1524,7 @@ mod tests {
                     instance: Some(9000),
                     address: "x".into(),
                     detail: String::new(),
+                    ..Default::default()
                 });
             }
             let mut warnings = Vec::new();
@@ -2185,6 +2221,7 @@ mod tests {
             instance: Some(7),
             address: "127.0.0.1".into(),
             detail: String::new(),
+            ..Default::default()
         };
         spawn_browse(tx, scripted_factory, conn, device);
 
@@ -2208,6 +2245,7 @@ mod tests {
             instance: Some(1),
             address: "x".into(),
             detail: String::new(),
+            ..Default::default()
         };
         spawn_browse(tx, scripted_factory, Addressing::new(), device);
 
@@ -2234,12 +2272,14 @@ mod tests {
                 instance: Some(1000),
                 address: "127.0.0.1".into(),
                 detail: String::new(),
+                ..Default::default()
             },
             DiscoveredDevice {
                 key: "d-bad".into(), // browse fails for this one
                 instance: Some(9000),
                 address: "x".into(),
                 detail: String::new(),
+                ..Default::default()
             },
         ];
         spawn_scan_all_objects(tx, scripted_factory, conn, devices, Vec::new());
@@ -2719,6 +2759,36 @@ mod tests {
         assert!(rx
             .try_iter()
             .any(|e| matches!(e, WorkerEvent::PointPublish { error: Some(_), .. })));
+    }
+
+    #[tokio::test]
+    async fn publish_failures_for_points_without_a_status_entry_still_emit_events() {
+        // A point removed from the table mid-cycle has no status row; its failed publish must not need one.
+        for format in [PayloadFormat::Scalar, PayloadFormat::NetixEnvelope] {
+            let (tx, rx) = unbounded();
+            let mqtt = offline_mqtt(format);
+            let mut publisher = RumqttPublisher::new(&mqtt).unwrap();
+            let mut status = HashMap::new();
+            let samples: Vec<PointSample> = (0..6000u32)
+                .map(|i| PointSample {
+                    point: bacnet_point(i, true),
+                    value: TelemetryValue::Number(i as f64),
+                    topic: "Netix/Flood".into(),
+                    timestamp_ms: i as i64,
+                })
+                .collect();
+
+            let stats = publish_samples(&tx, &mut publisher, &mqtt, &samples, &mut status).await;
+
+            assert!(
+                stats.failed > 0,
+                "{format:?}: saturated channel should record failures"
+            );
+            assert!(status.is_empty());
+            assert!(rx
+                .try_iter()
+                .any(|e| matches!(e, WorkerEvent::PointPublish { error: Some(_), .. })));
+        }
     }
 
     /// A TLS config with a CA path that holds no certificates: `build_transport` (hence `RumqttPublisher::new`) fails without needing a broker.

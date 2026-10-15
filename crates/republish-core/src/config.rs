@@ -631,6 +631,27 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_key_without_cert() {
+        let mut config = AppConfig::default();
+        config.mqtt.client_key_path = Some("/tmp/client.key".into());
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .contains("configured together"));
+    }
+
+    #[test]
+    fn validate_rejects_a_wildcard_in_the_device_topic_prefix() {
+        // Default payload_format is NetixEnvelope; the device prefix is used verbatim in the topic.
+        let mut config = AppConfig::default();
+        config.mqtt.device_topic_prefix = "Netix/+/Device".into();
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .contains("device topic is invalid"));
+    }
+
+    #[test]
     fn validate_rejects_zero_poll_interval_for_enabled_points() {
         let mut config = AppConfig::default();
         config.points.push(PointConfig {

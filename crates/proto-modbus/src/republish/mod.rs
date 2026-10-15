@@ -2,6 +2,7 @@
 
 mod scan;
 
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
@@ -15,7 +16,7 @@ use republish_core::model::{
 use republish_core::RepublishProtocol;
 use tokio::time::timeout;
 use tokio_modbus::client::Context;
-use tokio_modbus::prelude::Reader;
+use tokio_modbus::prelude::{ReadCode, Reader};
 use tokio_modbus::Slave;
 
 /// Default register range when connection fields are unset.
@@ -23,6 +24,13 @@ const DEFAULT_BROWSE_START: u16 = 0;
 const DEFAULT_BROWSE_COUNT: u16 = 32;
 /// Stop scanning a table after this many consecutive unreadable addresses.
 const MAX_CONSECUTIVE_GAPS: u16 = 8;
+/// Read Device Identification (function 43 / MEI 14) object ids.
+const ID_VENDOR_NAME: u8 = 0x00;
+const ID_PRODUCT_CODE: u8 = 0x01;
+const ID_PRODUCT_NAME: u8 = 0x04;
+const ID_MODEL_NAME: u8 = 0x05;
+/// A stream read split over more responses than this is a misbehaving device, not a long object list.
+const MAX_IDENTIFICATION_READS: usize = 4;
 
 pub struct ModbusRepublishProtocol {
     caps: Capabilities,
@@ -152,6 +160,77 @@ async fn probe_modbus(ctx: &mut Context) -> Option<&'static str> {
     None
 }
 
+/// How a device answered one Read Device Identification category.
+enum Identification {
+    /// The objects it returned, by object id.
+    Objects(HashMap<u8, String>),
+    /// A Modbus exception: it does not serve this category, but may serve a lower one.
+    Refused,
+    /// No answer at all, or a broken one: asking again on this connection is pointless.
+    Silent,
+}
+
+/// One stream read of a category from object 0, following `more_follows`.
+async fn read_identification(
+    ctx: &mut Context,
+    read_code: ReadCode,
+    read_timeout: Duration,
+) -> Identification {
+    let mut objects = HashMap::new();
+    let mut object_id = 0u8;
+    for _ in 0..MAX_IDENTIFICATION_READS {
+        let response = match timeout(
+            read_timeout,
+            ctx.read_device_identification(read_code, object_id),
+        )
+        .await
+        {
+            Ok(Ok(Ok(response))) => response,
+            Ok(Ok(Err(_exception))) if objects.is_empty() => return Identification::Refused,
+            _ if objects.is_empty() => return Identification::Silent,
+            _ => break,
+        };
+        for object in &response.device_id_objects {
+            if let Some(text) = object
+                .value_as_str()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                objects.entry(object.id).or_insert_with(|| text.to_string());
+            }
+        }
+        if !response.more_follows {
+            break;
+        }
+        object_id = response.next_object_id;
+    }
+    Identification::Objects(objects)
+}
+
+/// Vendor and model from Read Device Identification, best-effort: meters answer the basic category (VendorName,
+/// ProductCode), many the regular one too (ProductName, ModelName), and plenty neither.
+async fn read_identity(
+    ctx: &mut Context,
+    read_timeout: Duration,
+) -> (Option<String>, Option<String>) {
+    let mut objects = HashMap::new();
+    for read_code in [ReadCode::Regular, ReadCode::Basic] {
+        match read_identification(ctx, read_code, read_timeout).await {
+            Identification::Objects(found) => {
+                objects = found;
+                break;
+            }
+            Identification::Refused => continue,
+            Identification::Silent => break,
+        }
+    }
+    let text = |id: u8| objects.get(&id).cloned();
+    let model = text(ID_MODEL_NAME)
+        .or_else(|| text(ID_PRODUCT_NAME))
+        .or_else(|| text(ID_PRODUCT_CODE));
+    (text(ID_VENDOR_NAME), model)
+}
+
 async fn probe_host(ip: Ipv4Addr, params: &ConnParams) -> Option<DiscoveredDevice> {
     let addr = SocketAddr::from((ip, params.port));
     let host_label = endpoint_label(&ip.to_string(), params.port);
@@ -159,11 +238,15 @@ async fn probe_host(ip: Ipv4Addr, params: &ConnParams) -> Option<DiscoveredDevic
         .await
         .ok()?;
     let table = probe_modbus(&mut ctx).await?;
+    let (vendor_name, model_name) = read_identity(&mut ctx, params.timeout).await;
     Some(DiscoveredDevice {
         key: format!("modbus-{}", host_label.replace([':', '.'], "-")),
         instance: None,
         address: host_label,
         detail: format!("unit {} ({table})", params.unit),
+        vendor_id: None,
+        vendor_name,
+        model_name,
     })
 }
 

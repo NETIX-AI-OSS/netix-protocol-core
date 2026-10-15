@@ -24,6 +24,12 @@ use registry::DeviceEntry;
 /// BACnet vendor identifier assigned to this simulator.
 pub const VENDOR_ID: u32 = 260;
 
+/// The ASHRAE registry name of [`VENDOR_ID`], answered as the Device object's vendor-name.
+pub const VENDOR_NAME: &str = "BACnet Stack at SourceForge";
+
+/// The Device object's model-name.
+pub const MODEL_NAME: &str = "NETIX Simulator";
+
 /// Maximum APDU length advertised in I-Am/device responses: the BACnet/IP single-segment ceiling (1500 MTU minus Ethernet/IP/UDP/BVLC-NPDU overhead).
 pub const MAX_APDU_LENGTH: u32 = 1476;
 
