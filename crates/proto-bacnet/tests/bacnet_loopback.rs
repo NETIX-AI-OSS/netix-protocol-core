@@ -19,8 +19,8 @@ use bacnet_types::primitives::ObjectIdentifier;
 use bytes::{Bytes, BytesMut};
 use proto_api::Addressing;
 use proto_bacnet::test_support::{
-    browse_device_points_with_client, collect_discovered_devices, poll_points_once_with_client,
-    resolve_device_key_with_client, scan_device_objects_with_client,
+    browse_device_points_with_client, collect_discovered_devices, discover_devices_with_client,
+    poll_points_once_with_client, resolve_device_key_with_client, scan_device_objects_with_client,
 };
 use republish_core::model::{PointConfig, TelemetryValue};
 use std::net::Ipv4Addr;
@@ -254,6 +254,87 @@ async fn discovers_identity_faithful_key_and_tag_path() {
 
     server.await.unwrap();
     client.stop().await.unwrap();
+}
+
+/// Answers the Device object's reads during discovery: OBJECT_NAME always, VENDOR_NAME and MODEL_NAME only when
+/// `identifies` (a device that ignores them leaves the client to time out).
+fn spawn_device_identity_server(
+    mut server_net: NetworkLayer<BipTransport>,
+    mut server_rx: tokio::sync::mpsc::Receiver<ReceivedApdu>,
+    identifies: bool,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Ok(Some(received)) = timeout(Duration::from_secs(3), server_rx.recv()).await {
+            let Apdu::ConfirmedRequest(request) = apdu::decode_apdu(received.apdu.clone()).unwrap()
+            else {
+                panic!("expected confirmed request");
+            };
+            let rp = ReadPropertyRequest::decode(&request.service_request).unwrap();
+            assert_eq!(rp.object_identifier.object_type(), ObjectType::DEVICE);
+            let value = match rp.property_identifier {
+                PropertyIdentifier::OBJECT_NAME => character_string("ahu-12-001"),
+                PropertyIdentifier::VENDOR_NAME if identifies => character_string("Honeywell"),
+                PropertyIdentifier::MODEL_NAME if identifies => {
+                    character_string(" Spyder PUL6438S ")
+                }
+                PropertyIdentifier::VENDOR_NAME | PropertyIdentifier::MODEL_NAME => continue,
+                other => panic!("unexpected read-property request: {other:?}"),
+            };
+            send_read_property_ack(
+                &mut server_net,
+                &received.source_mac,
+                request.invoke_id,
+                rp,
+                value,
+            )
+            .await;
+        }
+        server_net.stop().await.unwrap();
+    })
+}
+
+#[tokio::test]
+async fn discovery_reports_the_device_objects_vendor_and_model() {
+    let (mut client, mut server_net, server_rx) = start_pair(500).await;
+    send_i_am(&mut server_net, client.local_mac(), DEVICE_INSTANCE).await;
+    sleep(Duration::from_millis(100)).await;
+    let server = spawn_device_identity_server(server_net, server_rx, true);
+
+    let devices = discover_devices_with_client(&client).await;
+
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].key, "ahu-12");
+    assert_eq!(devices[0].instance, Some(DEVICE_INSTANCE));
+    // The I-Am's vendor-identifier, kept as a number beside the detail line older readers parse.
+    assert_eq!(devices[0].vendor_id, Some(42));
+    assert_eq!(
+        devices[0].detail,
+        format!("instance {DEVICE_INSTANCE}, vendor 42")
+    );
+    assert_eq!(devices[0].vendor_name.as_deref(), Some("Honeywell"));
+    assert_eq!(devices[0].model_name.as_deref(), Some("Spyder PUL6438S"));
+
+    client.stop().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn discovery_keeps_a_device_that_will_not_name_its_vendor() {
+    let (mut client, mut server_net, server_rx) = start_pair(300).await;
+    send_i_am(&mut server_net, client.local_mac(), DEVICE_INSTANCE).await;
+    sleep(Duration::from_millis(100)).await;
+    let server = spawn_device_identity_server(server_net, server_rx, false);
+
+    let devices = discover_devices_with_client(&client).await;
+
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].key, "ahu-12");
+    assert_eq!(devices[0].vendor_id, Some(42));
+    assert_eq!(devices[0].vendor_name, None);
+    assert_eq!(devices[0].model_name, None);
+
+    client.stop().await.unwrap();
+    server.await.unwrap();
 }
 
 fn identity_read_property_value(request: &ReadPropertyRequest) -> Vec<u8> {

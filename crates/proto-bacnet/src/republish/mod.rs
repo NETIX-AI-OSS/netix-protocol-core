@@ -281,16 +281,39 @@ async fn resolve_device_key(client: &BacnetIpClient, instance: u32) -> String {
     }
 }
 
+/// Reads one of the Device object's text properties, best-effort: `None` when it is unreadable or blank.
+async fn read_device_text(
+    client: &BacnetIpClient,
+    instance: u32,
+    property: PropertyIdentifier,
+) -> Option<String> {
+    let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, instance).ok()?;
+    let text = read_scalar(client, instance, device_oid, property)
+        .await?
+        .to_string();
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 async fn collect_devices(client: &BacnetIpClient) -> Vec<DiscoveredDevice> {
     let discovered = client.discovered_devices().await;
     let mut devices = Vec::with_capacity(discovered.len());
     for device in discovered {
         let instance = device.object_identifier.instance_number();
+        // vendor-name and model-name are required Device properties; read alongside the key so a scan is not slower.
+        let (key, vendor_name, model_name) = tokio::join!(
+            resolve_device_key(client, instance),
+            read_device_text(client, instance, PropertyIdentifier::VENDOR_NAME),
+            read_device_text(client, instance, PropertyIdentifier::MODEL_NAME),
+        );
         devices.push(DiscoveredDevice {
-            key: resolve_device_key(client, instance).await,
+            key,
             instance: Some(instance),
             address: format_bip_mac(device.mac_address.as_slice()),
             detail: format!("instance {instance}, vendor {}", device.vendor_id),
+            vendor_id: Some(u32::from(device.vendor_id)),
+            vendor_name,
+            model_name,
         });
     }
     devices.sort_by(|a, b| a.key.cmp(&b.key));

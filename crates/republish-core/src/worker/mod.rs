@@ -1481,6 +1481,7 @@ mod tests {
                     instance: Some(1000 + i as u32),
                     address: "127.0.0.1".into(),
                     detail: String::new(),
+                    ..Default::default()
                 });
             }
             if flag(conn, "bad_device") {
@@ -1489,6 +1490,7 @@ mod tests {
                     instance: Some(9000),
                     address: "x".into(),
                     detail: String::new(),
+                    ..Default::default()
                 });
             }
             let mut warnings = Vec::new();
@@ -2185,6 +2187,7 @@ mod tests {
             instance: Some(7),
             address: "127.0.0.1".into(),
             detail: String::new(),
+            ..Default::default()
         };
         spawn_browse(tx, scripted_factory, conn, device);
 
@@ -2208,6 +2211,7 @@ mod tests {
             instance: Some(1),
             address: "x".into(),
             detail: String::new(),
+            ..Default::default()
         };
         spawn_browse(tx, scripted_factory, Addressing::new(), device);
 
@@ -2234,12 +2238,14 @@ mod tests {
                 instance: Some(1000),
                 address: "127.0.0.1".into(),
                 detail: String::new(),
+                ..Default::default()
             },
             DiscoveredDevice {
                 key: "d-bad".into(), // browse fails for this one
                 instance: Some(9000),
                 address: "x".into(),
                 detail: String::new(),
+                ..Default::default()
             },
         ];
         spawn_scan_all_objects(tx, scripted_factory, conn, devices, Vec::new());

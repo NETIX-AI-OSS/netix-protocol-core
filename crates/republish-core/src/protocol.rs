@@ -218,6 +218,7 @@ mod tests {
             instance: Some(1),
             address: "127.0.0.1".into(),
             detail: String::new(),
+            ..Default::default()
         };
         let point = PointConfig::default();
 

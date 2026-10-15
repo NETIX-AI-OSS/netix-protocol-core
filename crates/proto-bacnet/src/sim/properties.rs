@@ -8,7 +8,7 @@ use sim_core::Simulation;
 
 use crate::sim::registry::{DeviceEntry, PointEntry};
 
-use super::{MAX_APDU_LENGTH, VENDOR_ID};
+use super::{MAX_APDU_LENGTH, MODEL_NAME, VENDOR_ID, VENDOR_NAME};
 
 /// A lightweight description of a single property read operation.
 pub(crate) struct PropertyRead {
@@ -131,6 +131,8 @@ fn read_device_property(
             ObjectIdentifier::new(ObjectType::Device, device.device_id),
         )),
         PropertyIdentifier::VendorIdentifier => Some(PropertyValue::Unsigned(VENDOR_ID as u64)),
+        PropertyIdentifier::VendorName => Some(PropertyValue::CharacterString(VENDOR_NAME.into())),
+        PropertyIdentifier::ModelName => Some(PropertyValue::CharacterString(MODEL_NAME.into())),
         PropertyIdentifier::MaxApduLengthAccepted => {
             Some(PropertyValue::Unsigned(MAX_APDU_LENGTH as u64))
         }
@@ -280,6 +282,14 @@ mod tests {
         assert_eq!(
             resolve_property_read(&mk(PropertyIdentifier::VendorIdentifier), &registry, &sim),
             Some(PropertyValue::Unsigned(VENDOR_ID as u64))
+        );
+        assert_eq!(
+            resolve_property_read(&mk(PropertyIdentifier::VendorName), &registry, &sim),
+            Some(PropertyValue::CharacterString(VENDOR_NAME.into()))
+        );
+        assert_eq!(
+            resolve_property_read(&mk(PropertyIdentifier::ModelName), &registry, &sim),
+            Some(PropertyValue::CharacterString(MODEL_NAME.into()))
         );
         assert_eq!(
             resolve_property_read(
