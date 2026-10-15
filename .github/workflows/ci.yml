@@ -197,7 +197,7 @@ jobs:
       # Enforced: republish-core keeps 100% line coverage on the headless build.
       - name: Enforce 100% line coverage (republish-core, headless)
         # `+nightly` activates #[coverage(off)]; don't force via RUSTFLAGS.
-        run: cargo +nightly llvm-cov -p republish-core --no-default-features --fail-uncovered-lines 0
+        run: cargo +nightly llvm-cov -p republish-core --no-default-features --fail-uncovered-lines 0 --show-missing-lines
       - name: Install Linux build dependencies (iced GUI)
         run: |
           sudo apt-get update
