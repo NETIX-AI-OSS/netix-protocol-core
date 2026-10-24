@@ -9,6 +9,11 @@ ignore = [
     "RUSTSEC-2026-0192", # ttf-parser (via iced GUI) — unmaintained
     "RUSTSEC-2026-0206", # rustybuzz (via iced GUI) — unmaintained
     "RUSTSEC-2024-0449", # unsafe-libyaml (via serde_yaml: async-opcua-core, sim-core config) — unmaintained
+    # D-Bus split crates are unmaintained; iced still uses zbus 5 and no
+    # compatible replacement is released. Keep the existing transitive-only policy.
+    "RUSTSEC-2026-0371", # zbus_names (via iced/window_clipboard)
+    "RUSTSEC-2026-0370", # zvariant (via iced/window_clipboard)
+    "RUSTSEC-2026-0372", # zvariant_derive (via iced/window_clipboard)
     # Transitive vulnerabilities pinned by upstream (not directly upgradable):
     "RUSTSEC-2026-0194", # quick-xml DoS (via async-opcua) — trusted-input path
     "RUSTSEC-2026-0195", # quick-xml DoS (via async-opcua) — trusted-input path
