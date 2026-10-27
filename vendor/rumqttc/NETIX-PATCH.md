@@ -20,3 +20,7 @@ integration-test targets, their fixtures and development-only dependencies are
 also omitted from the normalized Cargo.toml. They are not part of the library
 used by republish-core. Cargo.toml.orig preserves the upstream manifest with
 the verifier requirement updated.
+
+An empty `[workspace]` keeps the upstream dependency isolated from the
+first-party workspace's test and lint targets. The root workspace also excludes
+this directory. First-party lint, test and coverage gates are unchanged.
