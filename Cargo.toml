@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/proto-api", "crates/sim-core", "crates/proto-bacnet", "crates/proto-modbus", "crates/proto-opcua", "crates/republish-core"]
-exclude = ["crates/proto-bacnet/fuzz"]
+exclude = ["crates/proto-bacnet/fuzz", "crates/republish-core/vendor/rumqttc"]
 
 # Patched bacnet-transport for ephemeral-port broadcast; re-applied downstream.
 [patch.crates-io]
