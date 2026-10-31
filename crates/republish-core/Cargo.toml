@@ -26,8 +26,8 @@ toml = { workspace = true }
 tokio = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 
-# Upstream 0.25.1 pins webpki 0.102, which has no fix for RUSTSEC-2026-0382.
-rumqttc = { version = "0.25.1", path = "../../vendor/rumqttc" }
+# Published maintained MQTT 3.1.1 client; keep TLS verification and avoid a custom vendor backport.
+rumqttc = { package = "rumqttc-v4-next", version = "0.34.0" }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2.2"
 sha2 = "0.10"
