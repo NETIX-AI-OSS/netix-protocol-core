@@ -2,7 +2,8 @@ use crate::config::MqttConfig;
 use crate::model::{PointSample, PublishStats};
 use anyhow::{anyhow, Context, Result};
 use rumqttc::{
-    AsyncClient, ConnectReturnCode, Event, MqttOptions, Packet, QoS, TlsConfiguration, Transport,
+    AsyncClient, ConnectReturnCode, Event, MqttOptions, Packet, PublishOptions, QoS,
+    TlsConfiguration, Transport,
 };
 use serde_json::json;
 use std::fs;
@@ -210,8 +211,11 @@ impl RumqttPublisher {
     // coverage(off): live rumqttc loop; poll dispatch tested separately.
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn new(config: &MqttConfig) -> Result<Self> {
-        let mut options = MqttOptions::new(&config.client_id, &config.host, config.port);
-        options.set_keep_alive(Duration::from_secs(config.keep_alive_secs.max(5)));
+        let mut options = MqttOptions::new(&config.client_id, (config.host.as_str(), config.port));
+        options.set_keep_alive(
+            u16::try_from(config.keep_alive_secs.max(5))
+                .context("MQTT keep-alive exceeds the 65535-second protocol limit")?,
+        );
         options.set_transport(build_transport(config)?);
         if let Some(username) = config.username.as_deref().filter(|value| !value.is_empty()) {
             options.set_credentials(username, config.password.clone().unwrap_or_default());
@@ -219,7 +223,9 @@ impl RumqttPublisher {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
             anyhow!("RumqttPublisher::new must be called from within a tokio runtime")
         })?;
-        let (client, mut eventloop) = AsyncClient::new(options, OUTBOUND_CHANNEL_CAPACITY);
+        let (client, mut eventloop) = AsyncClient::builder(options)
+            .capacity(OUTBOUND_CHANNEL_CAPACITY)
+            .build();
         let state = Arc::new(ConnectionState::default());
 
         // Event loop runs in its own task so the request channel always drains.
@@ -246,7 +252,11 @@ impl RumqttPublisher {
     /// Hands a publish to the event loop without blocking; fails fast when the outbound channel is full.
     fn enqueue(&self, topic: &str, payload: Vec<u8>, retain: bool) -> Result<()> {
         self.client
-            .try_publish(topic, QoS::AtLeastOnce, retain, payload)
+            .try_publish(
+                topic,
+                payload,
+                PublishOptions::new(QoS::AtLeastOnce).retain(retain),
+            )
             .map_err(|error| anyhow!("failed to enqueue MQTT publish to {topic}: {error}"))
     }
 
@@ -501,6 +511,141 @@ fn load_private_key(
 mod tests {
     use super::*;
     use crate::model::{PointConfig, TelemetryValue};
+
+    async fn read_wire_packet<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> (u8, Vec<u8>) {
+        use tokio::io::AsyncReadExt;
+        let kind = stream.read_u8().await.unwrap();
+        let mut remaining = 0_usize;
+        let mut multiplier = 1;
+        loop {
+            let byte = stream.read_u8().await.unwrap();
+            remaining += usize::from(byte & 127) * multiplier;
+            if byte & 128 == 0 {
+                break;
+            }
+            multiplier *= 128;
+            assert!(multiplier <= 128 * 128 * 128);
+        }
+        let mut body = vec![0; remaining];
+        stream.read_exact(&mut body).await.unwrap();
+        (kind, body)
+    }
+
+    fn tls_server(cert: &rcgen::CertifiedKey) -> rumqttc::tokio_rustls::TlsAcceptor {
+        use rumqttc::tokio_rustls::rustls::{self, pki_types::PrivatePkcs8KeyDer};
+        let key = PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.cert.der().clone()], key.into())
+            .unwrap();
+        rumqttc::tokio_rustls::TlsAcceptor::from(Arc::new(config))
+    }
+
+    #[tokio::test]
+    async fn maintained_client_preserves_tls_mqtt311_auth_qos_retain_and_ack() {
+        use tokio::io::AsyncWriteExt;
+        let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+        let acceptor = tls_server(&cert);
+        let directory = tempfile::tempdir().unwrap();
+        let ca = directory.path().join("ca.pem");
+        fs::write(&ca, cert.cert.pem()).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (finished, finish) = tokio::sync::oneshot::channel();
+        let broker = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut stream = acceptor.accept(tcp).await.unwrap();
+            let (kind, connect) = read_wire_packet(&mut stream).await;
+            assert_eq!(kind, 0x10);
+            assert_eq!(&connect[..7], b"\x00\x04MQTT\x04", "Preserve MQTT 3.1.1");
+            assert_eq!(connect[7] & 0xc0, 0xc0, "Preserve username/password flags");
+            assert!(connect.ends_with(b"\x00\x08operator\x00\x06secret"));
+            stream.write_all(&[0x20, 2, 0, 0]).await.unwrap();
+            let (kind, publish) = read_wire_packet(&mut stream).await;
+            assert_eq!(kind, 0x33, "QoS 1 and retain remain enabled");
+            let topic_length = usize::from(u16::from_be_bytes([publish[0], publish[1]]));
+            assert_eq!(&publish[2..2 + topic_length], b"migration/test");
+            let id = &publish[2 + topic_length..4 + topic_length];
+            assert_eq!(&publish[4 + topic_length..], b"42");
+            stream.write_all(&[0x40, 2, id[0], id[1]]).await.unwrap();
+            stream.flush().await.unwrap();
+            // Keep TLS alive until the publisher consumes PUBACK; closing a TLS
+            // stream immediately can hide the final packet behind EOF.
+            let _ = finish.await;
+        });
+        let config = MqttConfig {
+            host: "127.0.0.1".into(),
+            port,
+            use_tls: true,
+            ca_cert_path: Some(ca.to_string_lossy().into_owned()),
+            username: Some("operator".into()),
+            password: Some("secret".into()),
+            ..MqttConfig::default()
+        };
+        let publisher = RumqttPublisher::new(&config).unwrap();
+        publisher
+            .enqueue("migration/test", b"42".to_vec(), true)
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while publisher.acked_count() != 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            finished.send(()).unwrap();
+            broker.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn maintained_client_rejects_untrusted_ca_and_wrong_server_name() {
+        for trusted_ca in [false, true] {
+            let name = if trusted_ca {
+                "wrong.invalid"
+            } else {
+                "127.0.0.1"
+            };
+            let cert = rcgen::generate_simple_self_signed(vec![name.into()]).unwrap();
+            let acceptor = tls_server(&cert);
+            let directory = tempfile::tempdir().unwrap();
+            let ca = directory.path().join("ca.pem");
+            let trust = if trusted_ca {
+                cert.cert.pem()
+            } else {
+                rcgen::generate_simple_self_signed(vec!["other.invalid".into()])
+                    .unwrap()
+                    .cert
+                    .pem()
+            };
+            fs::write(&ca, trust).unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let broker = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let _ = acceptor.accept(tcp).await;
+            });
+            let config = MqttConfig {
+                host: "127.0.0.1".into(),
+                port,
+                use_tls: true,
+                ca_cert_path: Some(ca.to_string_lossy().into_owned()),
+                ..MqttConfig::default()
+            };
+            let mut options = MqttOptions::new("reject-invalid-tls", ("127.0.0.1", port));
+            options.set_transport(build_transport(&config).unwrap());
+            let (_client, mut events) = AsyncClient::builder(options).capacity(1).build();
+            let error = tokio::time::timeout(Duration::from_secs(10), events.poll())
+                .await
+                .unwrap()
+                .expect_err("Untrusted CA or wrong server name must fail TLS");
+            let text = error.to_string().to_lowercase();
+            assert!(
+                text.contains("certificate"),
+                "Expected a certificate validation error: {error}"
+            );
+            broker.abort();
+        }
+    }
 
     #[derive(Default)]
     struct FakePublisher {
