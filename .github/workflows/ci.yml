@@ -12,7 +12,9 @@ permissions:
   contents: read
 jobs:
   check:
-    runs-on: [build-only, Linux, X64]
+    runs-on:
+      group: default
+      labels: [build-only, Linux, X64]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -43,7 +45,9 @@ jobs:
 
   headless:
     name: Headless republish-core (no gui feature)
-    runs-on: [build-only, Linux, X64]
+    runs-on:
+      group: default
+      labels: [build-only, Linux, X64]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -74,7 +78,9 @@ jobs:
 
   feature-matrix:
     name: Adapter feature permutations
-    runs-on: [build-only, Linux, X64]
+    runs-on:
+      group: default
+      labels: [build-only, Linux, X64]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     strategy:
@@ -119,7 +125,9 @@ jobs:
 
   all-features:
     name: Workspace all-features
-    runs-on: [build-only, Linux, X64]
+    runs-on:
+      group: default
+      labels: [build-only, Linux, X64]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -142,7 +150,9 @@ jobs:
 
   loopback-smoke:
     name: Cross-protocol republish loopbacks
-    runs-on: [build-only, Linux, X64]
+    runs-on:
+      group: default
+      labels: [build-only, Linux, X64]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -169,7 +179,9 @@ jobs:
 
   cargo-deny:
     name: License and advisory gate
-    runs-on: [build-only, Linux, X64]
+    runs-on:
+      group: default
+      labels: [build-only, Linux, X64]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -187,7 +199,9 @@ jobs:
 
   fuzz-compile:
     name: Fuzz target compile check
-    runs-on: [build-only, Linux, X64]
+    runs-on:
+      group: default
+      labels: [build-only, Linux, X64]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -203,7 +217,9 @@ jobs:
 
   coverage:
     name: LLVM coverage (republish-core 100% line gate)
-    runs-on: [build-only, Linux, X64]
+    runs-on:
+      group: default
+      labels: [build-only, Linux, X64]
     container: rust:1.96.0-bookworm
     timeout-minutes: 45
     steps:
