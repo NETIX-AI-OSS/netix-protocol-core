@@ -12,9 +12,14 @@ permissions:
   contents: read
 jobs:
   check:
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: e2e-worker
+      labels: [build-only, Linux, X64]
+    container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
+      - name: Install container build tools
+        run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
@@ -23,8 +28,8 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - name: Install Linux build dependencies (iced GUI)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y \
             pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
             libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
             libegl1-mesa-dev
@@ -40,9 +45,14 @@ jobs:
 
   headless:
     name: Headless republish-core (no gui feature)
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: e2e-worker
+      labels: [build-only, Linux, X64]
+    container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
+      - name: Install container build tools
+        run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
@@ -68,7 +78,10 @@ jobs:
 
   feature-matrix:
     name: Adapter feature permutations
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: e2e-worker
+      labels: [build-only, Linux, X64]
+    container: rust:1.96.0-bookworm
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -87,6 +100,8 @@ jobs:
           - { package: proto-opcua, features: "republish" }
           - { package: proto-opcua, features: "sim,republish" }
     steps:
+      - name: Install container build tools
+        run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
@@ -95,8 +110,8 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - name: Install Linux build dependencies (iced GUI)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y \
             pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
             libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
             libegl1-mesa-dev
@@ -110,9 +125,14 @@ jobs:
 
   all-features:
     name: Workspace all-features
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: e2e-worker
+      labels: [build-only, Linux, X64]
+    container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
+      - name: Install container build tools
+        run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
@@ -120,8 +140,8 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - name: Install Linux build dependencies (iced GUI)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y \
             pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
             libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
             libegl1-mesa-dev
@@ -130,9 +150,14 @@ jobs:
 
   loopback-smoke:
     name: Cross-protocol republish loopbacks
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: e2e-worker
+      labels: [build-only, Linux, X64]
+    container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
+      - name: Install container build tools
+        run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
@@ -140,8 +165,8 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - name: Install Linux build dependencies (iced GUI)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y \
             pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
             libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
             libegl1-mesa-dev
@@ -154,9 +179,14 @@ jobs:
 
   cargo-deny:
     name: License and advisory gate
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: e2e-worker
+      labels: [build-only, Linux, X64]
+    container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
+      - name: Install container build tools
+        run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
@@ -169,9 +199,14 @@ jobs:
 
   fuzz-compile:
     name: Fuzz target compile check
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: e2e-worker
+      labels: [build-only, Linux, X64]
+    container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
+      - name: Install container build tools
+        run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
@@ -182,9 +217,14 @@ jobs:
 
   coverage:
     name: LLVM coverage (republish-core 100% line gate)
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: e2e-worker
+      labels: [build-only, Linux, X64]
+    container: rust:1.96.0-bookworm
     timeout-minutes: 45
     steps:
+      - name: Install container build tools
+        run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       # Nightly enables #[coverage(off)] (excludes unreachable OS-fault paths).
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # nightly
@@ -200,8 +240,8 @@ jobs:
         run: cargo +nightly llvm-cov -p republish-core --no-default-features --fail-uncovered-lines 0 --show-missing-lines
       - name: Install Linux build dependencies (iced GUI)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y \
             pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev \
             libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
             libegl1-mesa-dev
