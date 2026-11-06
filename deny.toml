@@ -5,6 +5,7 @@ ignore = [
     # Unmaintained transitive crates (no replacement/fix published):
     "RUSTSEC-2025-0121", # gcc (via cc/build stack) — unmaintained
     "RUSTSEC-2024-0436", # paste — unmaintained, ubiquitous proc-macro dep
+    "RUSTSEC-2026-0441", # pin-utils — unmaintained, ubiquitous futures dep
     "RUSTSEC-2025-0134", # rustls-pemfile — unmaintained
     "RUSTSEC-2026-0192", # ttf-parser (via iced GUI) — unmaintained
     "RUSTSEC-2026-0206", # rustybuzz (via iced GUI) — unmaintained

@@ -18,17 +18,15 @@ repository = "https://github.com/NETIX-AI-OSS/netix-protocol-core"
 # Shared third-party deps (versions tracked from the original tools).
 anyhow = "1.0"
 async-trait = "0.1"
-bytes = "1.10"
+bytes = "1.12"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 crossbeam-channel = "0.5"
-env_logger = "0.11"
 log = "0.4"
 rand = "0.8"
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9.34"
-thiserror = "2.0"
-tokio = { version = "1.48", features = ["full"] }
+tokio = { version = "1.54", features = ["full"] }
 tokio-util = "0.7"
 toml = "0.9"
 
