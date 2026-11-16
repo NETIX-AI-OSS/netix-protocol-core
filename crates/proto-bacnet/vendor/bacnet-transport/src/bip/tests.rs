@@ -126,7 +126,7 @@ async fn read_bdt_from_bbmd() {
     let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _client_rx = client_transport.start().await.unwrap();
 
-    // Read the BDT — includes the configured entry plus the auto-inserted self entry
+    // Read the BDT, includes the configured entry plus the auto-inserted self entry
     let bdt = client_transport.read_bdt(&bbmd_mac).await.unwrap();
     assert_eq!(bdt.len(), 2);
     assert!(bdt
@@ -199,7 +199,7 @@ async fn write_bdt_to_bbmd() {
         .unwrap();
     assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
 
-    // Verify by reading back — includes written entry plus auto-inserted self
+    // Verify by reading back, includes written entry plus auto-inserted self
     let bdt = client_transport.read_bdt(&bbmd_mac).await.unwrap();
     assert!(bdt
         .iter()

@@ -133,11 +133,11 @@ pub struct Bip6ForeignDeviceConfig {
 /// IPv6 multicast scope for BACnet broadcasts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bip6BroadcastScope {
-    /// FF02::BAC0 — link-local (single link only)
+    /// FF02::BAC0, link-local (single link only)
     LinkLocal,
-    /// FF05::BAC0 — site-local (building/campus, default)
+    /// FF05::BAC0, site-local (building/campus, default)
     SiteLocal,
-    /// FF08::BAC0 — organization-local
+    /// FF08::BAC0, organization-local
     OrganizationLocal,
 }
 
@@ -417,7 +417,7 @@ impl TransportPort for Bip6Transport {
                             debug!(error = %e, "Error during VMAC collision check");
                             break;
                         }
-                        Err(_) => break, // timeout elapsed — no collision
+                        Err(_) => break, // timeout elapsed, no collision
                     }
                 }
 

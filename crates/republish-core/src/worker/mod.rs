@@ -531,7 +531,7 @@ pub fn spawn_scan_all_objects(
             let total_points = merge.points.len();
             let _ = sender.send(WorkerEvent::BulkTagImport(merge));
             let _ = sender.send(WorkerEvent::Finished(format!(
-                "Scanned {total} device(s) ({failures} failure(s)) — {added} point(s) added, {updated} updated, {total_points} total"
+                "Scanned {total} device(s) ({failures} failure(s)), {added} point(s) added, {updated} updated, {total_points} total"
             )));
         });
     });
@@ -678,7 +678,7 @@ pub fn spawn_republisher(
                     log(
                         &sender,
                         LogLevel::Info,
-                        "No enabled points; discover_on_start=true — discovering devices to poll"
+                        "No enabled points; discover_on_start=true, discovering devices to poll"
                             .to_string(),
                     );
                     match discover_points(proto.as_ref(), &conn).await {

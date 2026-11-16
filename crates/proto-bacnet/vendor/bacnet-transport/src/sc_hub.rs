@@ -1,11 +1,11 @@
-//! BACnet/SC Hub — a minimal hub that accepts TLS WebSocket connections
+//! BACnet/SC Hub, a minimal hub that accepts TLS WebSocket connections
 //! from BACnet/SC nodes and relays messages between them.
 //!
 //! The hub performs three duties:
-//! 1. **Connection handshake** — responds to `ConnectRequest` with `ConnectAccept`.
-//! 2. **Message relay** — forwards `EncapsulatedNpdu` to the destination VMAC
+//! 1. **Connection handshake**, responds to `ConnectRequest` with `ConnectAccept`.
+//! 2. **Message relay**, forwards `EncapsulatedNpdu` to the destination VMAC
 //!    (unicast) or to all connected nodes (broadcast).
-//! 3. **Heartbeat** — responds to `HeartbeatRequest` with `HeartbeatAck`.
+//! 3. **Heartbeat**, responds to `HeartbeatRequest` with `HeartbeatAck`.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -35,7 +35,7 @@ struct HubClient {
     sink: Arc<Mutex<WsSink>>,
     /// Maximum NPDU length this client can accept (from ConnectRequest).
     max_npdu: u16,
-    /// Last activity time (epoch seconds) — updated on every received message.
+    /// Last activity time (epoch seconds), updated on every received message.
     last_activity: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -208,7 +208,7 @@ async fn accept_loop(
         // Reject if too many pre-handshake connections
         let current = active_connections.load(std::sync::atomic::Ordering::Relaxed);
         if current >= MAX_ACTIVE_CONNECTIONS {
-            warn!("Hub: rejecting connection from {peer_addr} — max active connections ({MAX_ACTIVE_CONNECTIONS}) reached");
+            warn!("Hub: rejecting connection from {peer_addr}, max active connections ({MAX_ACTIVE_CONNECTIONS}) reached");
             drop(tcp_stream);
             continue;
         }
@@ -238,7 +238,7 @@ async fn accept_loop(
                 }
             };
 
-            // WebSocket upgrade — echo the BACnet/SC subprotocol only if the client offered it.
+            // WebSocket upgrade, echo the BACnet/SC subprotocol only if the client offered it.
             let ws_stream = match tokio_tungstenite::accept_hdr_async(
                 tls_stream,
                 |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
@@ -500,7 +500,7 @@ async fn handle_client(
 
             ScFunction::EncapsulatedNpdu => {
                 let Some(registered_vmac) = client_vmac else {
-                    warn!("Hub: EncapsulatedNpdu before ConnectRequest from {peer_addr} — sending NAK");
+                    warn!("Hub: EncapsulatedNpdu before ConnectRequest from {peer_addr}, sending NAK");
                     let nak = build_bvlc_result_nak(
                         sc_msg.message_id,
                         ScFunction::EncapsulatedNpdu,
@@ -519,7 +519,7 @@ async fn handle_client(
                 let sender_vmac = sc_msg.originating_vmac.unwrap_or([0; 6]);
                 if sender_vmac != registered_vmac {
                     warn!(
-                        "originating VMAC {:?} does not match registered {:?} — dropping",
+                        "originating VMAC {:?} does not match registered {:?}, dropping",
                         sender_vmac, registered_vmac
                     );
                     continue;

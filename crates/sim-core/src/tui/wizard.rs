@@ -73,7 +73,7 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, wizard: &WizardState) {
             format!(
                 "Location (optional): {}",
                 if wizard.location.is_empty() {
-                    "—".to_string()
+                    "N/A".to_string()
                 } else {
                     wizard.location.clone()
                 }

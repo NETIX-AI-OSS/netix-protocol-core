@@ -148,7 +148,7 @@ struct RepublisherApp {
     stop_flag: Option<Arc<AtomicBool>>,
     recent_samples: VecDeque<PointSample>,
     statuses: HashMap<PointIdentity, PointStatus>,
-    /// Local enqueue attempts, NOT proof of delivery — see [`RepublisherApp::acked_total`].
+    /// Local enqueue attempts, NOT proof of delivery, see [`RepublisherApp::acked_total`].
     published_total: usize,
     /// Broker-confirmed deliveries (running total of QoS 1 PubAcks); the honest "delivered" figure to trust.
     acked_total: usize,
@@ -927,7 +927,7 @@ impl RepublisherApp {
                         row![
                             column![
                                 text(device.key.as_str()).size(14).color(palette.text),
-                                text(format!("{} — {}", device.address, device.detail))
+                                text(format!("{}, {}", device.address, device.detail))
                                     .size(12)
                                     .color(palette.muted),
                             ]
@@ -954,7 +954,7 @@ impl RepublisherApp {
                         .value
                         .as_ref()
                         .map(|v| v.to_string())
-                        .unwrap_or_else(|| "—".into());
+                        .unwrap_or_else(|| "N/A".into());
                     list = list.push(ui::card(
                         palette,
                         row![
@@ -1077,11 +1077,11 @@ impl RepublisherApp {
             let detail = status
                 .and_then(|s| s.last_value.as_ref())
                 .map(|v| v.to_string())
-                .unwrap_or_else(|| "—".into());
+                .unwrap_or_else(|| "N/A".into());
             let sampled = status
                 .and_then(|s| s.last_sample_ms)
                 .map(format_timestamp)
-                .unwrap_or_else(|| "—".into());
+                .unwrap_or_else(|| "N/A".into());
             list = list.push(ui::card(
                 palette,
                 row![

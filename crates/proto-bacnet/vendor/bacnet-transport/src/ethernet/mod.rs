@@ -381,7 +381,7 @@ mod transport {
     /// and continue (software-level filtering in the recv loop still works).
     #[allow(unsafe_code)]
     fn attach_bacnet_bpf_filter(fd: i32) {
-        // BPF program (no control byte check — accept UI, XID, and TEST per Clause 7.1):
+        // BPF program (no control byte check, accept UI, XID, and TEST per Clause 7.1):
         //   ldh [12]          ; load length/EtherType field
         //   jgt #1500, drop   ; if > 1500, it's an EtherType frame, drop
         //   ldb [14]          ; DSAP
@@ -422,63 +422,63 @@ mod transport {
 
         // 9 instructions: 7 filter + accept + drop
         let filter: [SockFilter; 9] = [
-            // [0] ldh [12] — load EtherType/Length field
+            // [0] ldh [12], load EtherType/Length field
             SockFilter {
                 code: BPF_LD | BPF_H | BPF_ABS,
                 jt: 0,
                 jf: 0,
                 k: 12,
             },
-            // [1] jgt #1500, drop(8) — skip 6 forward on true
+            // [1] jgt #1500, drop(8), skip 6 forward on true
             SockFilter {
                 code: BPF_JMP | BPF_JGT | BPF_K,
                 jt: 6,
                 jf: 0,
                 k: 1500,
             },
-            // [2] ldb [14] — DSAP
+            // [2] ldb [14], DSAP
             SockFilter {
                 code: BPF_LD | BPF_B | BPF_ABS,
                 jt: 0,
                 jf: 0,
                 k: 14,
             },
-            // [3] jeq #0x82, continue, drop(8) — skip 4 forward on false
+            // [3] jeq #0x82, continue, drop(8), skip 4 forward on false
             SockFilter {
                 code: BPF_JMP | BPF_JEQ | BPF_K,
                 jt: 0,
                 jf: 4,
                 k: 0x82,
             },
-            // [4] ldb [15] — SSAP
+            // [4] ldb [15], SSAP
             SockFilter {
                 code: BPF_LD | BPF_B | BPF_ABS,
                 jt: 0,
                 jf: 0,
                 k: 15,
             },
-            // [5] and #0xFE — mask off LLC response bit
+            // [5] and #0xFE, mask off LLC response bit
             SockFilter {
                 code: BPF_ALU | BPF_AND | BPF_K,
                 jt: 0,
                 jf: 0,
                 k: 0xFE,
             },
-            // [6] jeq #0x82, accept(7), drop(8) — skip 0/1
+            // [6] jeq #0x82, accept(7), drop(8), skip 0/1
             SockFilter {
                 code: BPF_JMP | BPF_JEQ | BPF_K,
                 jt: 0,
                 jf: 1,
                 k: 0x82,
             },
-            // ret #65535 — accept
+            // ret #65535, accept
             SockFilter {
                 code: BPF_RET | BPF_K,
                 jt: 0,
                 jf: 0,
                 k: 65535,
             },
-            // drop: ret #0 — reject
+            // drop: ret #0, reject
             SockFilter {
                 code: BPF_RET | BPF_K,
                 jt: 0,
@@ -524,7 +524,7 @@ mod transport {
             }
 
             // Open a raw AF_PACKET socket capturing all EtherType frames.
-            // SAFETY: pure syscall — no Rust-side memory invariants. Returned fd is
+            // SAFETY: pure syscall, no Rust-side memory invariants. Returned fd is
             // checked for `< 0` and wrapped in `OwnedFd` below before any other use.
             let fd = unsafe {
                 libc::socket(

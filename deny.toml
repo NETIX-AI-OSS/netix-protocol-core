@@ -3,25 +3,25 @@ version = 2
 # Known unfixed advisories in transitive deps; direct/first-party ones fail.
 ignore = [
     # Unmaintained transitive crates (no replacement/fix published):
-    "RUSTSEC-2025-0121", # gcc (via cc/build stack) — unmaintained
-    "RUSTSEC-2024-0436", # paste — unmaintained, ubiquitous proc-macro dep
-    "RUSTSEC-2026-0441", # pin-utils — unmaintained, ubiquitous futures dep
-    "RUSTSEC-2025-0134", # rustls-pemfile — unmaintained
-    "RUSTSEC-2026-0192", # ttf-parser (via iced GUI) — unmaintained
-    "RUSTSEC-2026-0206", # rustybuzz (via iced GUI) — unmaintained
-    "RUSTSEC-2024-0449", # unsafe-libyaml (via serde_yaml: async-opcua-core, sim-core config) — unmaintained
+    "RUSTSEC-2025-0121", # gcc (via cc/build stack), unmaintained
+    "RUSTSEC-2024-0436", # paste, unmaintained, ubiquitous proc-macro dep
+    "RUSTSEC-2026-0441", # pin-utils, unmaintained, ubiquitous futures dep
+    "RUSTSEC-2025-0134", # rustls-pemfile, unmaintained
+    "RUSTSEC-2026-0192", # ttf-parser (via iced GUI), unmaintained
+    "RUSTSEC-2026-0206", # rustybuzz (via iced GUI), unmaintained
+    "RUSTSEC-2024-0449", # unsafe-libyaml (via serde_yaml: async-opcua-core, sim-core config), unmaintained
     # D-Bus split crates are unmaintained; iced still uses zbus 5 and no
     # compatible replacement is released. Keep the existing transitive-only policy.
     "RUSTSEC-2026-0371", # zbus_names (via iced/window_clipboard)
     "RUSTSEC-2026-0370", # zvariant (via iced/window_clipboard)
     "RUSTSEC-2026-0372", # zvariant_derive (via iced/window_clipboard)
     # Transitive vulnerabilities pinned by upstream (not directly upgradable):
-    "RUSTSEC-2026-0194", # quick-xml DoS (via async-opcua) — trusted-input path
-    "RUSTSEC-2026-0195", # quick-xml DoS (via async-opcua) — trusted-input path
-    "RUSTSEC-2026-0049", # rustls-webpki CRL matching — awaiting rustls bump
-    "RUSTSEC-2026-0098", # rustls-webpki URI name constraints — awaiting bump
-    "RUSTSEC-2026-0099", # rustls-webpki wildcard name constraints — awaiting bump
-    "RUSTSEC-2026-0104", # rustls-webpki CRL parse panic — awaiting bump
+    "RUSTSEC-2026-0194", # quick-xml DoS (via async-opcua), trusted-input path
+    "RUSTSEC-2026-0195", # quick-xml DoS (via async-opcua), trusted-input path
+    "RUSTSEC-2026-0049", # rustls-webpki CRL matching, awaiting rustls bump
+    "RUSTSEC-2026-0098", # rustls-webpki URI name constraints, awaiting bump
+    "RUSTSEC-2026-0099", # rustls-webpki wildcard name constraints, awaiting bump
+    "RUSTSEC-2026-0104", # rustls-webpki CRL parse panic, awaiting bump
 ]
 
 [licenses]

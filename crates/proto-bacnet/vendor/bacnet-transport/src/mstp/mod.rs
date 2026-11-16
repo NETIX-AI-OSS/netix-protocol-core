@@ -76,9 +76,9 @@ const MAX_TX_QUEUE_DEPTH: usize = 256;
 pub enum MasterState {
     /// Waiting for a frame or timeout.
     Idle,
-    /// No token has been seen — attempting to claim it.
+    /// No token has been seen, attempting to claim it.
     NoToken,
-    /// We have the token — decide whether to send data or pass.
+    /// We have the token, decide whether to send data or pass.
     UseToken,
     /// Done sending data frames; decide whether to poll or pass token.
     DoneWithToken,
@@ -226,7 +226,7 @@ impl MasterNode {
                 if self.state == MasterState::PollForMaster
                     && frame.destination == self.config.this_station
                 {
-                    debug!(src = frame.source, "PFM reply — new successor");
+                    debug!(src = frame.source, "PFM reply, new successor");
                     self.next_station = frame.source;
                     self.sole_master = false;
                     self.poll_station = self.config.this_station;
@@ -241,7 +241,7 @@ impl MasterNode {
                 if self.state == MasterState::WaitForReply
                     && frame.destination == self.config.this_station
                 {
-                    // ReceivedReply or ReceivedUnexpectedFrame — validate source
+                    // ReceivedReply or ReceivedUnexpectedFrame, validate source
                     if self.expected_reply_source == Some(frame.source) {
                         let _ = npdu_tx.try_send(ReceivedNpdu {
                             npdu: frame.data.clone(),
@@ -341,7 +341,7 @@ impl MasterNode {
                 };
             }
         } else {
-            // Frame limit reached — transition to DoneWithToken and pass immediately.
+            // Frame limit reached, transition to DoneWithToken and pass immediately.
             self.state = MasterState::DoneWithToken;
             return self.pass_token();
         }
@@ -353,7 +353,7 @@ impl MasterNode {
             // Scan from this_station+1 through next_station-1 (wrapping at max_master)
             // Start polling at next_station (the first address after our known successor range)
             self.poll_station = next_addr(self.next_station, self.config.max_master);
-            // If poll_station wraps to us, skip — we already know about next_station
+            // If poll_station wraps to us, skip, we already know about next_station
             if self.poll_station == self.config.this_station {
                 // Only us and next_station exist; no gap to scan
                 return self.pass_token();
@@ -399,14 +399,14 @@ impl MasterNode {
             })
         } else if self.next_station == ts {
             // FindNewSuccessorUnknown: NS wrapped back to TS
-            // No other stations found — go to NoToken to try again
+            // No other stations found, go to NoToken to try again
             self.state = MasterState::NoToken;
             None
         } else {
             // FindNewSuccessor: NS didn't respond, try next address
             self.next_station = next_addr(self.next_station, self.config.max_master);
             if self.next_station == ts {
-                // Wrapped all the way around — declare sole master
+                // Wrapped all the way around, declare sole master
                 self.sole_master = true;
                 self.state = MasterState::UseToken;
                 self.frame_count = 0;
@@ -428,11 +428,11 @@ impl MasterNode {
     pub fn poll_timeout(&mut self) -> MstpFrame {
         self.poll_count += 1;
         if self.poll_count >= MAX_POLL_RETRIES {
-            // No one answered — move to next poll station
+            // No one answered, move to next poll station
             self.poll_count = 0;
             self.poll_station = next_addr(self.poll_station, self.config.max_master);
             if self.poll_station == self.config.this_station {
-                // We've scanned the entire range — no other stations
+                // We've scanned the entire range, no other stations
                 if self.next_station == self.config.this_station {
                     // Sole master: claim token directly
                     self.sole_master = true;
@@ -446,11 +446,11 @@ impl MasterNode {
                         data: Bytes::new(),
                     };
                 }
-                // Have a known successor — pass token to them
+                // Have a known successor, pass token to them
                 return self.pass_token();
             }
             if self.poll_station == self.next_station {
-                // Reached our known successor — done scanning the gap
+                // Reached our known successor, done scanning the gap
                 return self.pass_token();
             }
         }

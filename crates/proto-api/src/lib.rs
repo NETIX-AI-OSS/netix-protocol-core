@@ -89,7 +89,7 @@ pub enum DiscoveryKind {
     EndpointQuery,
     /// Probe a CIDR range for a well-known port (Modbus port 502 sweep).
     SubnetScan,
-    /// No automatic discovery — the user enters endpoints by hand.
+    /// No automatic discovery, the user enters endpoints by hand.
     ManualOnly,
 }
 
@@ -103,7 +103,7 @@ pub enum BrowseKind {
     AddressSpace,
     /// Scan register ranges (Modbus).
     RegisterScan,
-    /// No browse — points are entered by hand.
+    /// No browse, points are entered by hand.
     None,
 }
 

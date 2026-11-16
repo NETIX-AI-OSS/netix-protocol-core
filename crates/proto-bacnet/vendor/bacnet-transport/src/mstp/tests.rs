@@ -243,7 +243,7 @@ fn use_token_sends_queued_data() {
     node.queue_npdu(BROADCAST_MAC, Bytes::from_static(&[0x01, 0x20]))
         .unwrap();
 
-    // First call sends the first queued frame (FIFO — unicast to 5 dequeued first)
+    // First call sends the first queued frame (FIFO, unicast to 5 dequeued first)
     let frame = node.use_token();
     assert_eq!(frame.frame_type, FrameType::BACnetDataNotExpectingReply);
     assert_eq!(frame.destination, 5);
@@ -603,7 +603,7 @@ fn test_wait_for_reply_state_after_data_expecting_reply() {
     let frame = node.use_token();
     assert_eq!(frame.frame_type, FrameType::BACnetDataExpectingReply);
 
-    // The recv loop would now set WaitForReply — simulate that
+    // The recv loop would now set WaitForReply, simulate that
     node.state = MasterState::WaitForReply;
     assert_eq!(node.state, MasterState::WaitForReply);
 
@@ -699,7 +699,7 @@ fn test_poll_for_master_scan_range() {
     assert_eq!(node.poll_station, 10);
 
     // Station 10: 3 retries -> advance to next_addr(10, 10) = 0 == this_station
-    // poll_timeout detects this_station match — since next_station=5 (not TS),
+    // poll_timeout detects this_station match, since next_station=5 (not TS),
     // we have a known successor, pass token to them.
     for _ in 0..MAX_POLL_RETRIES {
         node.poll_timeout();

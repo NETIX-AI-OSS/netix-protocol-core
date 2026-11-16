@@ -16,7 +16,7 @@ pub struct SimServeContext {
     pub sim: Arc<Mutex<Simulation>>,
     /// Request/error counters surfaced in the TUI.
     pub metrics: Arc<AppMetrics>,
-    /// In-memory log buffer shown in the TUI (None in headless mode — use the `log` crate facade there).
+    /// In-memory log buffer shown in the TUI (None in headless mode, use the `log` crate facade there).
     pub log: Option<Arc<AppLog>>,
     /// Port to bind (already resolved from config or the adapter default).
     pub port: u16,

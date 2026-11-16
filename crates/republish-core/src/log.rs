@@ -146,7 +146,7 @@ mod tests {
         buf.clear();
         buf.push(LogLevel::Info, "c");
 
-        // Sequence is NOT reset by clear — it monotonically increases.
+        // Sequence is NOT reset by clear, it monotonically increases.
         assert_eq!(buf.entries().front().unwrap().sequence, 3);
     }
 

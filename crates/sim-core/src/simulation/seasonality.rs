@@ -79,7 +79,7 @@ mod tests {
         };
         let engine = SeasonalityEngine::new(schedule);
 
-        // 2023-10-18 Wednesday — 14:00 should be peak (35 °C)
+        // 2023-10-18 Wednesday, 14:00 should be peak (35 °C)
         let peak_time = Local.with_ymd_and_hms(2023, 10, 18, 14, 0, 0).unwrap();
         let peak_temp = engine.get_outside_temp(peak_time);
         assert!(

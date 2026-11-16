@@ -32,7 +32,7 @@ pub(super) async fn send_register_foreign_device(
     }
 }
 
-/// Context for the BIP receive loop — holds all shared state needed to
+/// Context for the BIP receive loop, holds all shared state needed to
 /// process incoming BVLL messages.
 pub(super) struct RecvContext {
     pub(super) local_mac: [u8; 6],
@@ -151,7 +151,7 @@ pub(super) async fn handle_bvll_message(
                 let orig_ip = msg.originating_ip.unwrap();
                 let orig_port = msg.originating_port.unwrap();
 
-                // Forward to FDT entries (BDT peers don't need it — they got it directly)
+                // Forward to FDT entries (BDT peers don't need it, they got it directly)
                 let fdt_targets = {
                     let mut state = bbmd.lock().await;
                     state.purge_expired();
@@ -484,7 +484,7 @@ pub(super) async fn handle_bvll_message(
                     }
                     BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK => {
                         tracing::error!(
-                            "BVLC-Result NAK: broadcast distribution rejected — \
+                            "BVLC-Result NAK: broadcast distribution rejected, \
                              foreign device registration may have failed or expired"
                         );
                     }
@@ -575,7 +575,7 @@ async fn forward_npdu(
 /// any packets.
 pub(super) fn resolve_local_ip() -> Option<Ipv4Addr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    // Connect to a public IP — doesn't actually send anything
+    // Connect to a public IP, doesn't actually send anything
     socket.connect("8.8.8.8:80").ok()?;
     match socket.local_addr().ok()? {
         std::net::SocketAddr::V4(v4) => Some(*v4.ip()),
