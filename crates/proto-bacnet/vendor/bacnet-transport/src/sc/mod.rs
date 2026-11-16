@@ -452,7 +452,7 @@ impl<W: WebSocketPort> ScTransport<W> {
 
 impl<W: WebSocketPort> TransportPort for ScTransport<W> {
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        /// NPDU receive channel capacity — smaller than BIP/Ethernet since SC is hub-relayed.
+        /// NPDU receive channel capacity, smaller than BIP/Ethernet since SC is hub-relayed.
         const NPDU_CHANNEL_CAPACITY: usize = 64;
 
         let (npdu_tx, npdu_rx) = mpsc::channel(NPDU_CHANNEL_CAPACITY);
@@ -474,7 +474,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         let ws = match Self::attempt_handshake(ws, &conn, self.connect_timeout_ms).await {
             Ok(ws) => ws,
             Err(primary_err) => {
-                // Primary failed — try failover if configured.
+                // Primary failed, try failover if configured.
                 if let Some(failover) = self.failover_ws.take() {
                     debug!("BACnet/SC primary connect failed, attempting failover");
                     // Reset connection state for the retry.
@@ -494,7 +494,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
 
         self.ws_shared = Some(ws.clone());
 
-        // Receive loop (handshake already done — no ConnectAccept handling needed)
+        // Receive loop (handshake already done, no ConnectAccept handling needed)
         let heartbeat_interval_ms = self.heartbeat_interval_ms;
         let heartbeat_timeout_ms = self.heartbeat_timeout_ms;
         let reconnect_config = self.reconnect_config.clone();
@@ -521,7 +521,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                         }
                                     };
 
-                                    // Handle HeartbeatAck — update last_heartbeat_ack timestamp
+                                    // Handle HeartbeatAck, update last_heartbeat_ack timestamp
                                     if msg.function == ScFunction::HeartbeatAck {
                                         last_heartbeat_ack = Instant::now();
                                         continue;
@@ -541,7 +541,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                         continue;
                                     }
 
-                                    // Handle NPDU — lock, extract results, drop before awaiting
+                                    // Handle NPDU, lock, extract results, drop before awaiting
                                     let (npdu_result, disconnect_ack) = {
                                         let mut c = conn.lock().await;
                                         let npdu = c.handle_received(&msg);
@@ -594,7 +594,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                             if last_heartbeat_ack.elapsed()
                                 > Duration::from_millis(heartbeat_timeout_ms)
                             {
-                                warn!("BACnet/SC heartbeat timeout — disconnecting");
+                                warn!("BACnet/SC heartbeat timeout, disconnecting");
                                 let mut c = conn.lock().await;
                                 c.state = ScConnectionState::Disconnected;
                                 break;
@@ -603,7 +603,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                     }
                 }
 
-                // After recv loop exits (ws closed/error) — attempt reconnection
+                // After recv loop exits (ws closed/error), attempt reconnection
                 let config = match &reconnect_config {
                     Some(cfg) => cfg,
                     None => break 'transport,
@@ -645,7 +645,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                     );
                     break 'transport;
                 }
-                // TODO: Hub failover — if primary hub fails N times, try failover hub URL
+                // TODO: Hub failover, if primary hub fails N times, try failover hub URL
             }
         });
 
@@ -663,7 +663,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
             if let Some(msg) = disconnect_msg {
                 let mut buf = BytesMut::new();
                 encode_sc_message(&mut buf, &msg);
-                // Best-effort send — don't block indefinitely
+                // Best-effort send, don't block indefinitely
                 let _ =
                     tokio::time::timeout(std::time::Duration::from_secs(2), ws.send(&buf)).await;
             }
@@ -728,7 +728,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
     fn local_mac(&self) -> &[u8] {
         // We need a reference with 'static-ish lifetime; store VMAC in struct
         // Since local_vmac is stored in the struct, we can reference it.
-        // But local_mac returns &[u8] — we need the slice to outlive `self`.
+        // But local_mac returns &[u8], we need the slice to outlive `self`.
         // Use a trick: reference the stored array.
         &self.local_vmac
     }

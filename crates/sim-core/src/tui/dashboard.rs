@@ -17,7 +17,7 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, snap: &AppSnapshot) {
     } else {
         "not listening"
     };
-    let last_client = snap.last_client.as_deref().unwrap_or("—");
+    let last_client = snap.last_client.as_deref().unwrap_or("N/A");
 
     // Build a compact per-kind request breakdown, e.g. "who_is 5 | read_property 12".
     let requests_line = if snap.named_requests.is_empty() {

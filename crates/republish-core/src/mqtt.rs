@@ -188,7 +188,7 @@ fn apply_poll(
             None
         }
         Ok(Event::Incoming(Packet::PubAck(_))) => {
-            // Broker confirmed a QoS 1 delivery — the honest counter.
+            // Broker confirmed a QoS 1 delivery, the honest counter.
             state.record_puback();
             None
         }
@@ -391,7 +391,7 @@ pub async fn publish_health<P: MqttPublisher + Send>(
 ) -> Result<()> {
     let payload = json!({
         "status": snapshot.status(),
-        // Local enqueue attempts this interval — NOT proof of delivery.
+        // Local enqueue attempts this interval, NOT proof of delivery.
         "published": snapshot.published,
         "queued": snapshot.published,
         // Broker-confirmed deliveries (running total of QoS 1 PubAcks).
@@ -1010,7 +1010,7 @@ mod tests {
             reconnects: 2,
             last_error: None,
         };
-        // Reconnects alone do not degrade status — only read/publish/stale failures do.
+        // Reconnects alone do not degrade status, only read/publish/stale failures do.
         assert_eq!(snapshot.status(), "ok");
     }
 

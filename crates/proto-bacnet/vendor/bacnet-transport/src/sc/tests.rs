@@ -132,7 +132,7 @@ fn encapsulated_npdu_not_for_us() {
 #[test]
 fn encapsulated_npdu_rejected_when_not_connected() {
     let mut conn = ScConnection::new([0x01; 6], [0u8; 16]);
-    // State is Disconnected by default — should reject EncapsulatedNpdu
+    // State is Disconnected by default, should reject EncapsulatedNpdu
     assert_eq!(conn.state, ScConnectionState::Disconnected);
 
     let msg = ScMessage {
@@ -199,7 +199,7 @@ fn build_disconnect() {
 #[test]
 fn build_disconnect_before_connect_returns_error() {
     let mut conn = ScConnection::new([0x01; 6], [0u8; 16]);
-    // hub_vmac is None — not connected yet
+    // hub_vmac is None, not connected yet
     let result = conn.build_disconnect_request();
     assert!(result.is_err());
     // State should not have changed
@@ -308,7 +308,7 @@ async fn transport_local_mac() {
     assert_eq!(transport.local_mac(), &[0x42; 6]);
 }
 
-/// Helper: act as a hub — receive ConnectRequest, send ConnectAccept,
+/// Helper: act as a hub, receive ConnectRequest, send ConnectAccept,
 /// then return the "hub" side websocket for further interaction.
 async fn hub_accept(ws_hub: &LoopbackWebSocket, hub_vmac: Vmac) {
     // Receive Connect-Request from the transport
@@ -577,7 +577,7 @@ async fn sc_connect_timeout() {
     let (ws_client, _ws_server) = LoopbackWebSocket::pair();
     let vmac = [0x01; 6];
     let mut transport = ScTransport::new(ws_client, vmac).with_connect_timeout_ms(200);
-    // Don't send ConnectAccept from server side — should timeout
+    // Don't send ConnectAccept from server side, should timeout
     let result = transport.start().await;
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
@@ -712,9 +712,9 @@ async fn sc_connect_succeeds_within_timeout() {
 
 #[tokio::test]
 async fn test_failover_on_primary_timeout() {
-    // Primary pair — hub side will NOT respond, causing a timeout.
+    // Primary pair, hub side will NOT respond, causing a timeout.
     let (primary_client, _primary_hub) = LoopbackWebSocket::pair();
-    // Failover pair — hub side WILL respond with ConnectAccept.
+    // Failover pair, hub side WILL respond with ConnectAccept.
     let (failover_client, failover_hub) = LoopbackWebSocket::pair();
 
     let vmac = [0x01; 6];
@@ -745,7 +745,7 @@ async fn test_failover_on_primary_timeout() {
 
 #[tokio::test]
 async fn test_no_failover_without_config() {
-    // Primary pair — hub side will NOT respond.
+    // Primary pair, hub side will NOT respond.
     let (primary_client, _primary_hub) = LoopbackWebSocket::pair();
 
     let vmac = [0x01; 6];
@@ -764,9 +764,9 @@ async fn test_no_failover_without_config() {
 
 #[tokio::test]
 async fn test_failover_primary_succeeds_no_failover_used() {
-    // Primary pair — hub side WILL respond.
+    // Primary pair, hub side WILL respond.
     let (primary_client, primary_hub) = LoopbackWebSocket::pair();
-    // Failover pair — should NOT be used.
+    // Failover pair, should NOT be used.
     let (failover_client, _failover_hub) = LoopbackWebSocket::pair();
 
     let vmac = [0x01; 6];

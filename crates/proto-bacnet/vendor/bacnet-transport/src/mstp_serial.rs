@@ -65,7 +65,7 @@ impl TokioSerialPort {
     /// Enable Linux kernel RS-485 mode via `TIOCSRS485` ioctl.
     ///
     /// The kernel will automatically toggle the UART's RTS pin to control
-    /// the RS-485 transceiver direction. This is zero-overhead — no
+    /// the RS-485 transceiver direction. This is zero-overhead, no
     /// userspace GPIO toggling needed. Requires DE/RE wired to the UART's
     /// RTS pin (e.g., GPIO17 on Raspberry Pi).
     ///
@@ -187,7 +187,7 @@ impl<S: SerialPort> GpioDirectionPort<S> {
     /// - `gpio_chip`: Path to the GPIO chip device (e.g., "/dev/gpiochip0").
     /// - `line`: GPIO line number for DE/RE control (e.g., 18).
     /// - `active_high`: If true, GPIO HIGH enables the transmitter (most
-    ///   common — MAX485 DE pin is active-high). If false, GPIO LOW enables TX.
+    ///   common, MAX485 DE pin is active-high). If false, GPIO LOW enables TX.
     pub fn new(inner: S, gpio_chip: &str, line: u32, active_high: bool) -> Result<Self, Error> {
         Self::with_post_tx_delay(inner, gpio_chip, line, active_high, 0)
     }
@@ -293,7 +293,7 @@ impl<S: SerialPort> SerialPort for GpioDirectionPort<S> {
     }
 
     async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
-        // Already in RX mode — just delegate.
+        // Already in RX mode, just delegate.
         self.inner.read(buf).await
     }
 }

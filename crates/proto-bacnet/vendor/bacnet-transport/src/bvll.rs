@@ -32,9 +32,9 @@ pub struct BvllMessage {
     /// For NPDU-carrying functions, this is the raw NPDU bytes.
     /// For management functions, this is the function-specific data.
     pub payload: Bytes,
-    /// Originating IPv4 address — only present for FORWARDED_NPDU.
+    /// Originating IPv4 address, only present for FORWARDED_NPDU.
     pub originating_ip: Option<[u8; 4]>,
-    /// Originating port — only present for FORWARDED_NPDU.
+    /// Originating port, only present for FORWARDED_NPDU.
     pub originating_port: Option<u16>,
 }
 

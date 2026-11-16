@@ -206,7 +206,7 @@ impl AppConfig {
             "Simulator config drift: this republisher config was emitted from a \
              simulator config with checksum {stored}, but the current simulator \
              config hashes to {current_checksum}. The republisher may be polling \
-             stale addresses — regenerate the config (simulator \
+             stale addresses, regenerate the config (simulator \
              --emit-republisher-config) so BACnet addresses stay in sync."
         );
         log::warn!("{message}");

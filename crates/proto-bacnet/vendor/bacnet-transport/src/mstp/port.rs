@@ -49,7 +49,7 @@ impl<S: SerialPort> MstpTransport<S> {
 
 impl<S: SerialPort> TransportPort for MstpTransport<S> {
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        /// NPDU receive channel capacity — smaller than BIP/Ethernet for low-bandwidth serial.
+        /// NPDU receive channel capacity, smaller than BIP/Ethernet for low-bandwidth serial.
         const NPDU_CHANNEL_CAPACITY: usize = 64;
 
         let (npdu_tx, npdu_rx) = mpsc::channel(NPDU_CHANNEL_CAPACITY);
@@ -73,7 +73,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
             let mut frame_buf = Vec::with_capacity(2048);
             let mut last_byte_time = tokio::time::Instant::now();
 
-            // Start with T_NO_TOKEN timeout — if we don't see anything, claim the token
+            // Start with T_NO_TOKEN timeout, if we don't see anything, claim the token
             let sleep = tokio::time::sleep(tokio::time::Duration::from_millis(T_NO_TOKEN_MS));
             tokio::pin!(sleep);
 
@@ -137,7 +137,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
                                 Ok((frame, consumed)) => {
                                     frame_buf.drain(..consumed);
 
-                                    // Process through state machine — collect
+                                    // Process through state machine, collect
                                     // frames under lock, drop before writing.
                                     let mut node_guard = node.lock().await;
                                     let response =
@@ -221,7 +221,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
                                     );
                                 }
                                 Err(_) => {
-                                    // Incomplete frame or bad CRC — skip first preamble byte
+                                    // Incomplete frame or bad CRC, skip first preamble byte
                                     if frame_buf.len() > 2 {
                                         frame_buf.drain(..1);
                                     }
@@ -261,7 +261,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
                                 node_guard.t_slot_ms
                             }
                             MasterState::PollForMaster => {
-                                // No reply to PFM — try next
+                                // No reply to PFM, try next
                                 let frame_to_send = node_guard.poll_timeout();
                                 encode_buf.clear();
                                 if let Ok(()) = encode_frame(&mut encode_buf, &frame_to_send) {
@@ -298,7 +298,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
                                         pending_writes.push(encode_buf.to_vec());
                                     }
                                 } else {
-                                    // No reply in time — send ReplyPostponed
+                                    // No reply in time, send ReplyPostponed
                                     let rp = MstpFrame {
                                         frame_type: FrameType::ReplyPostponed,
                                         destination: dest,

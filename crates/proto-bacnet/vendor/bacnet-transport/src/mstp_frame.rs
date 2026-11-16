@@ -36,21 +36,21 @@ pub const MAX_MASTER: u8 = 127;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FrameType {
-    /// Token — passed between masters to grant bus access.
+    /// Token, passed between masters to grant bus access.
     Token = 0x00,
-    /// Poll For Master — discover successor stations.
+    /// Poll For Master, discover successor stations.
     PollForMaster = 0x01,
-    /// Reply To Poll For Master — response to PFM.
+    /// Reply To Poll For Master, response to PFM.
     ReplyToPollForMaster = 0x02,
-    /// Test Request — data loopback test.
+    /// Test Request, data loopback test.
     TestRequest = 0x03,
-    /// Test Response — reply to test request.
+    /// Test Response, reply to test request.
     TestResponse = 0x04,
-    /// BACnet Data Expecting Reply — confirmed service request.
+    /// BACnet Data Expecting Reply, confirmed service request.
     BACnetDataExpectingReply = 0x05,
-    /// BACnet Data Not Expecting Reply — unconfirmed or response.
+    /// BACnet Data Not Expecting Reply, unconfirmed or response.
     BACnetDataNotExpectingReply = 0x06,
-    /// Reply Postponed — server needs more time.
+    /// Reply Postponed, server needs more time.
     ReplyPostponed = 0x07,
     /// Unknown frame type.
     Unknown(u8),

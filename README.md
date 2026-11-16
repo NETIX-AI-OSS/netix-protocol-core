@@ -4,9 +4,9 @@ Shared protocol-adapter libraries for the NETIX industrial-protocol tools. This
 is a Cargo workspace of reusable crates; the runnable binaries live in separate
 repositories and depend on these crates as git dependencies:
 
-- [`netix-simulator`](https://github.com/NETIX-AI-OSS/netix-simulator) — the
+- [`netix-simulator`](https://github.com/NETIX-AI-OSS/netix-simulator): the
   config-driven device simulator.
-- [`netix-republisher`](https://github.com/NETIX-AI-OSS/netix-republisher) — the
+- [`netix-republisher`](https://github.com/NETIX-AI-OSS/netix-republisher): the
   discover/browse/poll → MQTT republisher.
 
 ## Crates

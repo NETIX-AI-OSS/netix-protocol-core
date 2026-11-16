@@ -105,7 +105,7 @@ impl BipTransport {
 
     /// Set the path for persisting the BDT across restarts.
     /// Must be called before `start()`. The BDT is stored using the wire encoding
-    /// (10 bytes per entry) — no additional serialization dependencies needed.
+    /// (10 bytes per entry), no additional serialization dependencies needed.
     pub fn set_bdt_persist_path(&mut self, path: std::path::PathBuf) {
         self.bdt_persist_path = Some(path);
     }

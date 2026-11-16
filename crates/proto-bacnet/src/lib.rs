@@ -1,4 +1,4 @@
-//! BACnet/IP protocol adapter — the reference implementation of the generic simulator/republisher protocol traits.
+//! BACnet/IP protocol adapter, the reference implementation of the generic simulator/republisher protocol traits.
 
 use proto_api::{BrowseKind, Capabilities, DiscoveryKind, FieldSpec};
 

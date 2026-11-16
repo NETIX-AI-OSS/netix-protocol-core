@@ -218,7 +218,7 @@ fn encode_decode_address_resolution_ack() {
 fn vmac_from_device_instance_masks_to_22_bits() {
     let vmac = derive_vmac_from_device_instance(0x123456);
     assert_eq!(vmac, [0x12, 0x34, 0x56]);
-    // Value > 22 bits — upper bits should be masked off
+    // Value > 22 bits, upper bits should be masked off
     let vmac = derive_vmac_from_device_instance(0xFFFFFFFF);
     assert_eq!(vmac, [0x3F, 0xFF, 0xFF]);
 }
@@ -424,7 +424,7 @@ fn generate_random_vmac_produces_3_bytes() {
 
 #[test]
 fn generate_random_vmac_is_nondeterministic() {
-    // Generate several VMACs — at least two should differ.
+    // Generate several VMACs, at least two should differ.
     let vmacs: Vec<Bip6Vmac> = (0..10).map(|_| generate_random_vmac()).collect();
     let all_same = vmacs.windows(2).all(|w| w[0] == w[1]);
     assert!(!all_same, "10 random VMACs should not all be identical");

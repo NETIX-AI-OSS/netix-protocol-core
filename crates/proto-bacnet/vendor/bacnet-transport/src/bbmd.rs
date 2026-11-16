@@ -1,7 +1,7 @@
 //! BBMD (BACnet/IP Broadcast Management Device) state and tables.
 //!
 //! Manages the Broadcast Distribution Table (BDT) and Foreign Device Table
-//! (FDT) per ASHRAE 135-2020 Annex J. Pure state/logic — no async or I/O.
+//! (FDT) per ASHRAE 135-2020 Annex J. Pure state/logic, no async or I/O.
 
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ pub const BDT_ENTRY_SIZE: usize = 10;
 /// FDT entry wire format size: IP(4) + port(2) + TTL(2) + remaining(2) = 10 bytes.
 pub const FDT_ENTRY_SIZE: usize = 10;
 
-/// A Broadcast Distribution Table entry — one peer BBMD.
+/// A Broadcast Distribution Table entry, one peer BBMD.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BdtEntry {
     pub ip: [u8; 4],
@@ -23,7 +23,7 @@ pub struct BdtEntry {
     pub broadcast_mask: [u8; 4],
 }
 
-/// A Foreign Device Table entry — one registered foreign device.
+/// A Foreign Device Table entry, one registered foreign device.
 #[derive(Debug, Clone)]
 pub struct FdtEntry {
     pub ip: [u8; 4],
@@ -52,7 +52,7 @@ impl FdtEntry {
 
 /// An FDT entry decoded from the wire (Read-FDT-ACK payload).
 ///
-/// Unlike [`FdtEntry`], this does not contain an `Instant` field — it carries
+/// Unlike [`FdtEntry`], this does not contain an `Instant` field, it carries
 /// only the wire-format TTL and seconds-remaining values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FdtEntryWire {
@@ -99,7 +99,7 @@ pub fn decode_fdt(data: &[u8]) -> Result<Vec<FdtEntryWire>, Error> {
     Ok(entries)
 }
 
-/// BBMD state — BDT and FDT tables with forwarding logic.
+/// BBMD state, BDT and FDT tables with forwarding logic.
 #[derive(Debug)]
 pub struct BbmdState {
     bdt: Vec<BdtEntry>,

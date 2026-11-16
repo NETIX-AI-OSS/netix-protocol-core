@@ -18,7 +18,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 pub enum ScFunction {
     /// BVLC-Result
     Result = 0x00,
-    /// Encapsulated-NPDU — carries BACnet NPDU data.
+    /// Encapsulated-NPDU, carries BACnet NPDU data.
     EncapsulatedNpdu = 0x01,
     /// Address-Resolution
     AddressResolution = 0x02,
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn wire_format_check() {
-        // No VMACs — control byte should be 0x00 (no flags set).
+        // No VMACs, control byte should be 0x00 (no flags set).
         let msg = ScMessage {
             function: ScFunction::EncapsulatedNpdu,
             message_id: 0x0042,

@@ -58,7 +58,7 @@ impl TransportPort for LoopbackTransport {
     }
 
     async fn stop(&mut self) -> Result<(), Error> {
-        // Nothing to clean up — channels drop naturally.
+        // Nothing to clean up, channels drop naturally.
         Ok(())
     }
 

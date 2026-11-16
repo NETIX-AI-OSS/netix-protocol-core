@@ -196,7 +196,7 @@ impl fmt::Display for TelemetryValue {
 pub struct PublishStats {
     /// Samples handed to the outbound channel this cycle (local enqueue attempts).
     pub queued: usize,
-    /// Samples accepted into the outbound channel this cycle — a *local* success, NOT proof of broker delivery (see [`PublishStats::acked`]).
+    /// Samples accepted into the outbound channel this cycle, a *local* success, NOT proof of broker delivery (see [`PublishStats::acked`]).
     pub published: usize,
     /// Broker-confirmed deliveries (running total of QoS 1 PubAcks); the honest "delivered" count, which stays flat while `published` keeps climbing if the broker is unreachable.
     pub acked: usize,
