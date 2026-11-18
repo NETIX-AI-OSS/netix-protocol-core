@@ -38,3 +38,11 @@ republish-core = { path = "crates/republish-core", default-features = false }
 proto-bacnet = { path = "crates/proto-bacnet" }
 proto-modbus = { path = "crates/proto-modbus" }
 proto-opcua = { path = "crates/proto-opcua" }
+
+# Line tables keep file:line in backtraces and panics; full DWARF was most of target/ (and of every CI cache).
+# For a debugger session with variables: CARGO_PROFILE_DEV_DEBUG=full.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

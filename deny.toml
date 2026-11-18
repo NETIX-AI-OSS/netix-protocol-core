@@ -10,6 +10,7 @@ ignore = [
     "RUSTSEC-2026-0192", # ttf-parser (via iced GUI), unmaintained
     "RUSTSEC-2026-0206", # rustybuzz (via iced GUI), unmaintained
     "RUSTSEC-2024-0449", # unsafe-libyaml (via serde_yaml: async-opcua-core, sim-core config), unmaintained
+    "RUSTSEC-2026-0543", # chrono, unmaintained (no vulnerability): async-opcua and bacnet-rs depend on it, as do sim-core and republish-core; replacing it waits on those
     # D-Bus split crates are unmaintained; iced still uses zbus 5 and no
     # compatible replacement is released. Keep the existing transitive-only policy.
     "RUSTSEC-2026-0371", # zbus_names (via iced/window_clipboard)

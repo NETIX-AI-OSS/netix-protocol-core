@@ -25,7 +25,12 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
+      - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Only main saves: a PR restores main's cache instead of evicting it with its own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux build dependencies (iced GUI)
         run: |
           apt-get update
@@ -58,7 +63,12 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+      # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
+      - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Only main saves: a PR restores main's cache instead of evicting it with its own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Deliberately no iced/windowing packages: headless consumers need none.
       - name: Assert iced is absent from the headless graph
         run: |
@@ -107,7 +117,12 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
+      - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Only main saves: a PR restores main's cache instead of evicting it with its own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux build dependencies (iced GUI)
         run: |
           apt-get update
@@ -137,7 +152,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
           toolchain: stable
+      # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
+      - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Only main saves: a PR restores main's cache instead of evicting it with its own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux build dependencies (iced GUI)
         run: |
           apt-get update
@@ -162,7 +182,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
           toolchain: stable
+      # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
+      - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Only main saves: a PR restores main's cache instead of evicting it with its own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux build dependencies (iced GUI)
         run: |
           apt-get update
@@ -191,7 +216,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
           toolchain: stable
+      # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
+      - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Only main saves: a PR restores main's cache instead of evicting it with its own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
       - name: Check licenses and advisories
@@ -211,7 +241,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
           toolchain: stable
+      # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
+      - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Only main saves: a PR restores main's cache instead of evicting it with its own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Compile BACnet decoder fuzz target
         run: cargo build --manifest-path crates/proto-bacnet/fuzz/Cargo.toml --bin decode_scalar_value
 
@@ -231,7 +266,12 @@ jobs:
         with:
           toolchain: nightly
           components: llvm-tools-preview
+      # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
+      - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Only main saves: a PR restores main's cache instead of evicting it with its own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
       # Enforced: republish-core keeps 100% line coverage on the headless build.
