@@ -1,0 +1,16 @@
+name: clean workspace
+description: >-
+  Deletes build output from the workspace when the job ends. The runners are self-hosted and the job
+  container's workspace is a directory on the runner host, so target/ (several GB per job)
+  otherwise stays on that host's disk until this repository next checks out there.
+  Use it right after checkout and BEFORE Swatinem/rust-cache: post steps run in reverse order, so the
+  cache is saved first and the delete runs last.
+inputs:
+  paths:
+    description: workspace-relative paths to delete, one per line
+    default: target
+runs:
+  using: node24
+  main: main.js
+  post: post.js
+  post-if: always()
