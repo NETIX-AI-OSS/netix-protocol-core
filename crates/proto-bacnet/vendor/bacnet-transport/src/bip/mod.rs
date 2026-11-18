@@ -311,6 +311,8 @@ impl TransportPort for BipTransport {
         socket2.set_reuse_address(true).map_err(Error::Transport)?;
         socket2.set_broadcast(true).map_err(Error::Transport)?;
         socket2.set_nonblocking(true).map_err(Error::Transport)?;
+        // Windows would otherwise fail the receive loop after an ICMP port-unreachable.
+        crate::udp::ignore_connection_reset(&socket2).map_err(Error::Transport)?;
 
         let bind_addr = SocketAddrV4::new(self.interface, self.port);
         socket2.bind(&bind_addr.into()).map_err(Error::Transport)?;
@@ -399,6 +401,9 @@ impl TransportPort for BipTransport {
                                 warn!(error = %e, "Failed to decode BVLL frame");
                             }
                         }
+                    }
+                    Err(e) if crate::udp::is_transient(&e) => {
+                        debug!(error = %e, "UDP recv error ignored");
                     }
                     Err(e) => {
                         warn!(error = %e, "UDP recv error");

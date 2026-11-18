@@ -693,6 +693,7 @@ dependencies = [
  "socket2 0.6.5",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

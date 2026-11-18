@@ -339,6 +339,8 @@ impl TransportPort for Bip6Transport {
         socket2_sock
             .set_multicast_loop_v6(true)
             .map_err(Error::Transport)?;
+        // Windows would otherwise fail the receive loop after an ICMP port-unreachable.
+        crate::udp::ignore_connection_reset(&socket2_sock).map_err(Error::Transport)?;
 
         let bind_addr = SocketAddrV6::new(self.interface, self.port, 0, 0);
         socket2_sock
@@ -614,6 +616,9 @@ impl TransportPort for Bip6Transport {
                                 warn!(error = %e, "Failed to decode BVLC6 frame");
                             }
                         }
+                    }
+                    Err(e) if crate::udp::is_transient(&e) => {
+                        debug!(error = %e, "IPv6 UDP recv error ignored");
                     }
                     Err(e) => {
                         warn!(error = %e, "IPv6 UDP recv error");
