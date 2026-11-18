@@ -116,6 +116,14 @@ optional = true
 [dependencies.tracing]
 version = "0.1"
 
+# NETIX patch: SIO_UDP_CONNRESET for the BIP/BIP6 receive loops (src/udp.rs).
+[target."cfg(windows)".dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Win32_Networking_WinSock",
+    "Win32_System_IO",
+]
+
 [lints.clippy]
 dbg_macro = "deny"
 print_stderr = "warn"

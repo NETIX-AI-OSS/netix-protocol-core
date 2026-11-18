@@ -75,6 +75,35 @@ async fn unicast_loopback() {
     transport_b.stop().await.unwrap();
 }
 
+/// A unicast to a closed port draws an ICMP port-unreachable. Windows used to report it as
+/// WSAECONNRESET on the next receive, which ended the receive loop: every later datagram was lost.
+#[tokio::test]
+async fn receive_loop_survives_an_unreachable_peer() {
+    let mut transport_a = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    let mut transport_b = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    let mut rx_a = transport_a.start().await.unwrap();
+    let _rx_b = transport_b.start().await.unwrap();
+
+    let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let closed_mac = encode_bip_mac([127, 0, 0, 1], closed.local_addr().unwrap().port());
+    drop(closed);
+    let npdu = vec![0x01, 0x00, 0xCA, 0xFE];
+    for _ in 0..3 {
+        transport_a.send_unicast(&npdu, &closed_mac).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    transport_b.send_unicast(&npdu, transport_a.local_mac()).await.unwrap();
+    let received = timeout(Duration::from_secs(2), rx_a.recv())
+        .await
+        .expect("the receive loop stopped after the ICMP port-unreachable")
+        .expect("channel closed");
+    assert_eq!(received.npdu, npdu);
+
+    transport_a.stop().await.unwrap();
+    transport_b.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn bbmd_register_foreign_device() {
     // Start a BBMD
