@@ -14,7 +14,7 @@ jobs:
   check:
     runs-on:
       group: e2e-worker
-      labels: [build-only, Linux, X64]
+      labels: [build-only]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -52,7 +52,7 @@ jobs:
     name: Headless republish-core (no gui feature)
     runs-on:
       group: e2e-worker
-      labels: [build-only, Linux, X64]
+      labels: [build-only]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -90,7 +90,7 @@ jobs:
     name: Adapter feature permutations
     runs-on:
       group: e2e-worker
-      labels: [build-only, Linux, X64]
+      labels: [build-only]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     strategy:
@@ -142,7 +142,7 @@ jobs:
     name: Workspace all-features
     runs-on:
       group: e2e-worker
-      labels: [build-only, Linux, X64]
+      labels: [build-only]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -172,7 +172,7 @@ jobs:
     name: Cross-protocol republish loopbacks
     runs-on:
       group: e2e-worker
-      labels: [build-only, Linux, X64]
+      labels: [build-only]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -206,7 +206,7 @@ jobs:
     name: License and advisory gate
     runs-on:
       group: e2e-worker
-      labels: [build-only, Linux, X64]
+      labels: [build-only]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -231,7 +231,7 @@ jobs:
     name: Fuzz target compile check
     runs-on:
       group: e2e-worker
-      labels: [build-only, Linux, X64]
+      labels: [build-only]
     container: rust:1.96.0-bookworm
     timeout-minutes: 30
     steps:
@@ -254,7 +254,7 @@ jobs:
     name: LLVM coverage (republish-core 100% line gate)
     runs-on:
       group: e2e-worker
-      labels: [build-only, Linux, X64]
+      labels: [build-only]
     container: rust:1.96.0-bookworm
     timeout-minutes: 45
     steps:
