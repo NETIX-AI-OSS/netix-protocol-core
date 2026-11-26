@@ -19,16 +19,16 @@ jobs:
     runs-on:
       group: e2e-worker
       labels: [build-only]
-    container: rust:1.96.0-bookworm
+    container: rust:bookworm
     timeout-minutes: 30
     steps:
       - name: Install container build tools
         run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
+      - name: Use the image Rust and install lint components
+        run: |
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "${RUST_VERSION:?missing from the Rust image}" >> "$GITHUB_ENV"
+          rustup component add --toolchain "$RUST_VERSION" rustfmt clippy
       # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
       - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
@@ -57,16 +57,16 @@ jobs:
     runs-on:
       group: e2e-worker
       labels: [build-only]
-    container: rust:1.96.0-bookworm
+    container: rust:bookworm
     timeout-minutes: 30
     steps:
       - name: Install container build tools
         run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
-        with:
-          toolchain: stable
-          components: clippy
+      - name: Use the image Rust and install lint components
+        run: |
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "${RUST_VERSION:?missing from the Rust image}" >> "$GITHUB_ENV"
+          rustup component add --toolchain "$RUST_VERSION" clippy
       # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
       - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
@@ -95,7 +95,7 @@ jobs:
     runs-on:
       group: e2e-worker
       labels: [build-only]
-    container: rust:1.96.0-bookworm
+    container: rust:bookworm
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -105,10 +105,8 @@ jobs:
       - name: Install container build tools
         run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
+      - name: Use the preinstalled stable Rust
+        run: printf 'RUSTUP_TOOLCHAIN=%s\n' "${RUST_VERSION:?missing from the Rust image}" >> "$GITHUB_ENV"
       # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
       - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
@@ -138,16 +136,15 @@ jobs:
     runs-on:
       group: e2e-worker
       labels: [build-only]
-    container: rust:1.96.0-bookworm
+    container: rust:bookworm
     # A cold build of the GUI and all adapters takes longer on the ARM64 worker.
     timeout-minutes: 45
     steps:
       - name: Install container build tools
         run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
-        with:
-          toolchain: stable
+      - name: Use the preinstalled stable Rust
+        run: printf 'RUSTUP_TOOLCHAIN=%s\n' "${RUST_VERSION:?missing from the Rust image}" >> "$GITHUB_ENV"
       # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
       - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
@@ -168,15 +165,14 @@ jobs:
     runs-on:
       group: e2e-worker
       labels: [build-only]
-    container: rust:1.96.0-bookworm
+    container: rust:bookworm
     timeout-minutes: 30
     steps:
       - name: Install container build tools
         run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
-        with:
-          toolchain: stable
+      - name: Use the preinstalled stable Rust
+        run: printf 'RUSTUP_TOOLCHAIN=%s\n' "${RUST_VERSION:?missing from the Rust image}" >> "$GITHUB_ENV"
       # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
       - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
@@ -202,15 +198,14 @@ jobs:
     runs-on:
       group: e2e-worker
       labels: [build-only]
-    container: rust:1.96.0-bookworm
+    container: rust:bookworm
     timeout-minutes: 30
     steps:
       - name: Install container build tools
         run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
-        with:
-          toolchain: stable
+      - name: Use the preinstalled stable Rust
+        run: printf 'RUSTUP_TOOLCHAIN=%s\n' "${RUST_VERSION:?missing from the Rust image}" >> "$GITHUB_ENV"
       # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
       - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
@@ -227,15 +222,14 @@ jobs:
     runs-on:
       group: e2e-worker
       labels: [build-only]
-    container: rust:1.96.0-bookworm
+    container: rust:bookworm
     timeout-minutes: 30
     steps:
       - name: Install container build tools
         run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
-        with:
-          toolchain: stable
+      - name: Use the preinstalled stable Rust
+        run: printf 'RUSTUP_TOOLCHAIN=%s\n' "${RUST_VERSION:?missing from the Rust image}" >> "$GITHUB_ENV"
       # Deletes target/ from the runner host when the job ends, after rust-cache has saved (post steps run in reverse).
       - uses: ./.github/actions/clean-workspace
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
