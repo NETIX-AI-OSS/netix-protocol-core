@@ -33,5 +33,5 @@ curl --fail --silent --show-error --location --retry 2 "$url" --output "$archive
 printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check --strict
 tar -xOzf "$archive" "$entry" > "$destination/$tool"
 chmod 755 "$destination/$tool"
-"$destination/$tool" --version
+PATH="$destination:$PATH" cargo "${tool#cargo-}" --version
 printf '%s\n' "$destination" >> "$GITHUB_PATH"
