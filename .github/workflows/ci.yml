@@ -137,8 +137,8 @@ jobs:
       group: e2e-worker
       labels: [build-only]
     container: rust:bookworm
-    # A cold build of the GUI and all adapters takes longer on the ARM64 worker.
-    timeout-minutes: 45
+    # Cold ARM64 builds compile the GUI and every protocol adapter from scratch.
+    timeout-minutes: 90
     steps:
       - name: Install container build tools
         run: apt-get update && apt-get install -y --no-install-recommends cmake perl pkg-config
