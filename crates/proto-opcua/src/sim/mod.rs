@@ -100,6 +100,9 @@ impl SimProtocol for OpcuaSimProtocol {
                     },
                     "simulator",
                 ));
+            if let Some(pki_dir) = ctx.options.get("pki_dir").and_then(|v| v.as_str()) {
+                builder = builder.pki_dir(pki_dir);
+            }
             if secured {
                 builder = builder.create_sample_keypair(true).add_endpoint(
                     "basic256sha256_sign_encrypt",
