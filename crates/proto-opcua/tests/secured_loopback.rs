@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proto_api::Addressing;
+use republish_core::RepublishRegistry;
 use sim_core::config::{
     AssetInstanceSpec, AssetTemplate, BuildingConfig, IdPolicy, SeasonalityConfig, SimulatorConfig,
     TemplatePointSpec, WeeklySchedule,
@@ -57,8 +58,32 @@ fn sim_config() -> SimulatorConfig {
 }
 
 #[tokio::test]
-async fn secured_simulator_advertises_basic256sha256_endpoint() {
+async fn secured_simulator_browses_over_basic256sha256_endpoint() {
     let port = 14841u16;
+    let server_pki = tempfile::tempdir().unwrap();
+    let client_pki = tempfile::tempdir().unwrap();
+
+    // Secure endpoints require the server to trust the client's application certificate.
+    // Provision that trust before the simulator opens its certificate store.
+    let _client = opcua::client::ClientBuilder::new()
+        .application_name("NETIX Republisher")
+        .application_uri("urn:netix:republisher")
+        .product_uri("urn:netix:republisher")
+        .pki_dir(client_pki.path())
+        .create_sample_keypair(true)
+        .client()
+        .unwrap();
+    let client_cert_path = client_pki.path().join("own/cert.der");
+    let client_cert = opcua::crypto::CertificateStore::read_cert(&client_cert_path).unwrap();
+    let server_trusted = server_pki.path().join("trusted");
+    std::fs::create_dir_all(&server_trusted).unwrap();
+    std::fs::copy(
+        &client_cert_path,
+        server_trusted.join(opcua::crypto::CertificateStore::cert_file_name(
+            &client_cert,
+        )),
+    )
+    .unwrap();
 
     let sim = Arc::new(Mutex::new(Simulation::new(&sim_config()).unwrap()));
     let cancel = CancellationToken::new();
@@ -66,6 +91,11 @@ async fn secured_simulator_advertises_basic256sha256_endpoint() {
     proto_opcua::register_sim(&mut sim_registry);
     let mut options = Addressing::new();
     options.insert("secured".into(), serde_json::json!(true));
+    options.insert("host".into(), serde_json::json!("127.0.0.1"));
+    options.insert(
+        "pki_dir".into(),
+        serde_json::json!(server_pki.path().to_string_lossy()),
+    );
     let adapter = sim_registry.get("opcua").unwrap()(&options).unwrap();
     let ctx = SimServeContext {
         sim: Arc::clone(&sim),
@@ -106,6 +136,30 @@ async fn secured_simulator_advertises_basic256sha256_endpoint() {
         }),
         "expected Basic256Sha256 endpoint, got {endpoints:?}"
     );
+
+    let mut conn = Addressing::new();
+    conn.insert("endpoint_url".into(), serde_json::json!(url));
+    conn.insert(
+        "security_policy".into(),
+        serde_json::json!("basic256sha256"),
+    );
+    conn.insert("security_mode".into(), serde_json::json!("sign_encrypt"));
+    conn.insert(
+        "pki_dir".into(),
+        serde_json::json!(client_pki.path().to_string_lossy()),
+    );
+    let mut rep_registry = RepublishRegistry::new();
+    proto_opcua::register_republish(&mut rep_registry);
+    let proto = rep_registry.build("opcua").unwrap();
+    let device = proto.discover(&conn).await.unwrap().devices.remove(0);
+    let browsed = tokio::time::timeout(Duration::from_secs(20), proto.browse(&conn, &device))
+        .await
+        .expect("secure Browse timed out")
+        .expect("secure Browse failed");
+    assert!(browsed
+        .points
+        .iter()
+        .any(|point| point.name.as_deref() == Some("temp")));
 
     cancel.cancel();
     let _ = serve.await;

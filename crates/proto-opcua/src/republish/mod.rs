@@ -153,13 +153,17 @@ async fn connect(conn: &Addressing) -> Result<Connection> {
         ));
     }
 
-    let mut client = ClientBuilder::new()
+    let mut builder = ClientBuilder::new()
         .application_name("NETIX Republisher")
         .application_uri("urn:netix:republisher")
         .product_uri("urn:netix:republisher")
         .create_sample_keypair(policy != SECURITY_NONE)
         .trust_server_certs(true)
-        .session_retry_limit(1)
+        .session_retry_limit(1);
+    if let Some(pki_dir) = conn_str(conn, "pki_dir") {
+        builder = builder.pki_dir(pki_dir);
+    }
+    let mut client = builder
         .client()
         .map_err(|errors| anyhow!("OPC UA client build failed: {errors:?}"))?;
 
